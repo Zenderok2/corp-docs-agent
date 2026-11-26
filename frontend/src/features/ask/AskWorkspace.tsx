@@ -1,0 +1,278 @@
+import { useEffect, useState } from 'react'
+import type { FormEvent } from 'react'
+import {
+  ArrowRight, ArrowUp, BookOpenCheck, Check, ChevronDown, CircleHelp, ClipboardCheck,
+  FileText, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, ScanText, Search, Sparkles,
+} from 'lucide-react'
+import { api, describeError, formatDate, formatLocator, post, scopeFields } from '../../shared/api'
+import type { Answer, Citation, Question, Scope, Session } from '../../shared/api'
+import { SourceDialog } from '../sources/SourceDialog'
+import { PracticeDialog } from './PracticeDialog'
+
+const sampleQuestions = [
+  { label: 'Подписание договора', question: 'Кто подписывает агентский договор на 400 000 рублей и что проверяет инициатор?' },
+  { label: 'Лицензия подрядчика', question: 'Какую лицензию выдают внешнему подрядчику и на какой срок?' },
+  { label: 'Передача в службу качества', question: 'Как оформить гостевой пропуск в офис на выходные?' },
+]
+
+const outcomeLabels = {
+  answered: 'Ответ по регламентам',
+  partial: 'Ответ подтверждён частично',
+  needs_clarification: 'Нужно уточнение',
+  not_found: 'Ответ в регламентах не найден',
+  conflict: 'В источниках есть противоречие',
+  quality_answer: 'Ответ службы качества',
+}
+
+const explanations: Record<string, string> = {
+  unknown_publication: 'Найдены подходящие положения. Действие редакции на выбранную дату не подтверждено.',
+  partial: 'Доступные источники подтверждают часть ответа.',
+  conflict: 'Доступные положения дают разные ответы. Для однозначного решения нужна проверка службы качества.',
+  clarification_exhausted: 'После уточнений подтверждённого ответа всё ещё недостаточно.',
+  no_evidence: 'В доступных источниках не нашлось пункта, который прямо отвечает на вопрос.',
+}
+
+type Interaction = { id: string }
+
+export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }: {
+  session: Session
+  activeId: string | null
+  onSelect: (id: string) => void
+  onLogin: () => void
+  onLibrary: () => void
+}) {
+  const [draft, setDraft] = useState('')
+  const [context, setContext] = useState<Scope>({})
+  const [asOf, setAsOf] = useState('')
+  const [expanded, setExpanded] = useState(false)
+  const [current, setCurrent] = useState<Question | null>(null)
+  const [followUp, setFollowUp] = useState('')
+  const [sending, setSending] = useState(false)
+  const [failure, setFailure] = useState('')
+  const [sourceId, setSourceId] = useState<string | null>(null)
+  const [practice, setPractice] = useState<Citation | null>(null)
+
+  useEffect(() => {
+    if (!activeId) return
+    const abort = new AbortController()
+    let timer = 0
+    let retries = 0
+    const poll = async () => {
+      try {
+        const value = await api<Question>('/questions/' + activeId, { signal: abort.signal })
+        setCurrent(value)
+        retries = 0
+        if (value.status === 'queued' || value.status === 'running') {
+          timer = window.setTimeout(poll, 900)
+        }
+      } catch (error) {
+        if (!abort.signal.aborted) {
+          if (retries++ < 2) timer = window.setTimeout(poll, 1200)
+          else setFailure(describeError(error))
+        }
+      }
+    }
+    void poll()
+    return () => { abort.abort(); window.clearTimeout(timer) }
+  }, [activeId])
+
+  const displayed = current?.id === activeId ? current : null
+  const result = displayed?.result && 'outcome' in displayed.result ? displayed.result : null
+  const awaiting = Boolean(activeId && !failure && (!displayed || ['queued', 'running'].includes(displayed.status)))
+
+  async function send(question: string, parent?: string, detail?: Scope) {
+    if (!question.trim() || sending || !session.visible_versions) return
+    setFailure('')
+    setSending(true)
+    try {
+      const path = parent ? '/questions/' + parent + '/follow-ups' : '/questions'
+      const request = parent
+        ? { answer: question, context: detail ?? {} }
+        : { question, context, as_of: asOf || undefined }
+      const response = await post<Interaction>(path, request, crypto.randomUUID())
+      setDraft('')
+      setFollowUp('')
+      onSelect(response.id)
+    } catch (error) {
+      setFailure(describeError(error))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    void send(draft.trim())
+  }
+
+  return <div className="ask-layout">
+    <section className="ask-main" aria-label="Диалог с агентом">
+      {!activeId && <div className="welcome">
+        <div className="welcome-icon"><BookOpenCheck size={30} strokeWidth={1.7} /></div>
+        <h1>Спросите о корпоративном<br className="wide-only" /> процессе</h1>
+        <p>Агент найдёт подходящие положения, покажет точные цитаты и уточнит детали, если ответ зависит от контекста.</p>
+      </div>}
+
+      {displayed && <div className="conversation">
+        <div className="question-bubble">
+          <span className="speaker">Ваш вопрос</span>
+          <p>{displayed.question}</p>
+          <span className="tiny">На {formatDate(displayed.as_of)}</span>
+        </div>
+        {displayed.turns.map((turn, index) => <div className="question-bubble" key={index}>
+          <span className="speaker">Уточнение</span><p>{turn}</p>
+        </div>)}
+        {displayed.status === 'failed' && displayed.result && 'error_code' in displayed.result && (
+          <p className="alert error" role="alert">{describeError(displayed.result.error_code)}</p>
+        )}
+        {result && <AnswerPanel answer={result} openSource={setSourceId} />}
+        {result?.clarification && <div className="clarification">
+          <div className="clarification-title"><CircleHelp size={19} /><h3>{result.clarification.question}</h3></div>
+          {result.clarification.options.length > 0 && <div className="option-list">
+            {result.clarification.options.map((option) => {
+              const field = result.clarification?.field
+              return <button type="button" className="pill-button" key={option} disabled={sending} onClick={() => void send(
+                option, displayed.id, field ? { [field]: option } : {},
+              )}>{option}<ArrowRight size={15} /></button>
+            })}
+          </div>}
+          <form className="follow-up-form" onSubmit={(event) => {
+            event.preventDefault()
+            const field = result.clarification?.field
+            const value = followUp.trim()
+            void send(value, displayed.id, field ? { [field]: value } : {})
+          }}>
+            <input aria-label="Ответ на уточняющий вопрос" placeholder="Введите уточнение" required maxLength={result.clarification.field ? 160 : 800} value={followUp} onChange={(event) => setFollowUp(event.target.value)} />
+            <button className="button primary" type="submit" disabled={sending || !followUp.trim()} aria-label="Отправить уточнение"><ArrowUp size={19} /></button>
+          </form>
+        </div>}
+      </div>}
+
+      {awaiting && <div className="pending-box" role="status">
+        <span className="square-icon"><LoaderCircle className="spin" size={19} /></span>
+        <div><strong>{displayed?.status === 'running' ? 'Агент сверяет источники' : 'Вопрос принят'}</strong>
+          <p>{displayed?.status === 'running' ? 'Ищем основания и проверяем цитаты.' : 'Вопрос появится здесь, когда начнётся обработка.'}</p>
+        </div>
+      </div>}
+      {failure && <p className="alert error" role="alert">{failure}</p>}
+
+      {!session.visible_versions ? (
+        <div className="card no-access">
+          <FileText size={20} />
+          <div><h3>В этом сеансе нет доступных документов</h3>
+            <p>{session.staff_login_available ? 'Войдите с кодом участника, чтобы открыть рабочий корпус.' : 'Корпус появится после импорта.'}</p>
+          </div>
+          {session.staff_login_available && <button className="button primary" onClick={onLogin}>Войти</button>}
+        </div>
+      ) : !awaiting && !result?.clarification && (
+        <form className="composer card" onSubmit={submit}>
+          <label htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
+          <textarea id="question-box" rows={3} value={draft} placeholder="Например, кто подписывает агентский договор?" required minLength={4} maxLength={800}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && draft.trim().length >= 4) {
+                event.preventDefault()
+                void send(draft.trim())
+              }
+            }}
+          />
+          {expanded && <div className="context-fields">
+            {scopeFields.map(({ key, label }) => <label key={key}>{label}<input type="text" value={context[key] ?? ''} maxLength={160} onChange={(event) => setContext({ ...context, [key]: event.target.value || null })} /></label>)}
+            <label>Дата применимости<input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} /></label>
+          </div>}
+          <div className="composer-actions">
+            <button type="button" className="button text-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+              <ListFilter size={17} /> Указать контекст <ChevronDown size={14} className={expanded ? 'flipped' : ''} />
+            </button>
+            <button type="submit" className="button primary" disabled={sending || draft.trim().length < 4}>
+              {sending ? 'Отправляем…' : 'Спросить'}<ArrowUp size={17} />
+            </button>
+          </div>
+        </form>
+      )}
+      {!activeId && session.role === 'demo' && session.visible_versions > 0 && <div className="examples">
+        <h2>Попробуйте на примерах</h2>
+        <div className="example-grid">
+          {sampleQuestions.map((example) => <button type="button" className="example card" key={example.label} onClick={() => {
+            setDraft(example.question)
+            document.getElementById('question-box')?.focus()
+          }}><span>{example.label}</span><ArrowRight size={16} /></button>)}
+        </div>
+      </div>}
+    </section>
+
+    <aside className="evidence-rail" aria-label="Основания ответа">
+      <div className="aside-heading"><div><LibraryBig size={19} /><h2>Источники</h2></div>
+        {result && result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
+      </div>
+      {result && result.citations.length > 0 ? <div className="evidence-list">
+        {result.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
+          <button type="button" className="source-link" onClick={() => setSourceId(citation.id)}>
+            <span className="source-number">{index + 1}</span>
+            <span><strong>{citation.title}</strong><small>{formatLocator(citation.locator)} · Ред. {citation.version_label}</small></span>
+            <ArrowRight size={16} className="source-arrow" />
+          </button>
+          <blockquote>{citation.quote}</blockquote>
+          <button type="button" className="button text-button practice-link" onClick={() => setPractice(citation)}>
+            <MessageSquarePlus size={15} /> Добавить пример применения
+          </button>
+        </div>)}
+      </div> : <div className="evidence-empty">
+        <div className="evidence-illustration"><ScanText size={31} strokeWidth={1.5} /></div>
+        <p>{result ? 'Цитаты в этом ответе отсутствуют.' : 'Здесь появятся пункты документов, на которые опирается ответ.'}</p>
+        {session.visible_versions > 0 && <button className="button text-button" type="button" onClick={onLibrary}>
+          Открыть документы <ArrowRight size={15} />
+        </button>}
+      </div>}
+      {result && <Trace answer={result} />}
+    </aside>
+    {sourceId && <SourceDialog key={sourceId} id={sourceId} onClose={() => setSourceId(null)} />}
+    {practice && displayed && <PracticeDialog citation={practice} questionId={displayed.id} onClose={() => setPractice(null)} />}
+  </div>
+}
+
+function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: string) => void }) {
+  const positive = answer.outcome === 'answered' || answer.outcome === 'quality_answer'
+  return <article className="answer-panel card">
+    <div className="answer-heading">
+      <span className={positive ? 'square-icon' : 'square-icon amber'}>{positive ? <Check size={21} /> : <CircleHelp size={20} />}</span>
+      <div><span className="speaker">Агент документов</span><h2>{outcomeLabels[answer.outcome]}</h2></div>
+    </div>
+    {explanations[answer.message_code] && <p className="answer-explanation">{explanations[answer.message_code]}</p>}
+    {answer.corpus_changed && <p className="alert neutral">После ответа корпус обновился. Проверьте актуальность новым вопросом.</p>}
+    {answer.citations.length > 0 && <ol className="answer-quotes">
+      {answer.citations.map((citation, index) => <li key={citation.id}>
+        <p>{citation.quote}</p>
+        <button type="button" className="inline-source" onClick={() => openSource(citation.id)} aria-label={'Открыть источник ' + (index + 1)}>{index + 1}</button>
+      </li>)}
+    </ol>}
+    {answer.quality_case?.status === 'pending' && <p className="review-status"><ClipboardCheck size={17} /> Запрос передан в службу качества.</p>}
+    {answer.quality_answer && <div className="knowledge-answer">
+      {answer.outcome !== 'quality_answer' && <strong>Ответ службы качества</strong>}
+      <p>{answer.quality_answer.answer}</p>
+      <small>Проверено службой качества · {formatDate(answer.quality_answer.reviewed_at)}</small>
+    </div>}
+    {answer.practices.length > 0 && <div className="approved-practices">
+      <h3>Практика применения</h3>
+      {answer.practices.map((entry) => <div key={entry.id}>
+        <strong>{entry.situation}</strong><p>{entry.action_taken}</p>
+      </div>)}
+    </div>}
+  </article>
+}
+
+function Trace({ answer }: { answer: Answer }) {
+  const search = answer.trace.find((entry) => entry.step === 'retrieval')
+  return <details className="trace card">
+    <summary><Search size={16} /> Как искал агент <ChevronDown size={15} /></summary>
+    <ul>
+      <li>Поиск по словам · {search?.lexical_hits ?? 0} фрагментов</li>
+      {search?.vector_state === 'ready' && <li>Поиск по смыслу · {search.vector_hits} фрагментов</li>}
+      {search?.vector_state && search.vector_state !== 'ready' && <li>Семантический индекс недоступен</li>}
+      {Boolean(search?.related_hits) && <li>Связанные пункты · {search?.related_hits}</li>}
+      {answer.usage.chat_model && <li><Sparkles size={13} /> Локальная модель {answer.usage.chat_model}</li>}
+      <li>Проверено цитат · {answer.citations.length}</li>
+      <li>Время обработки · {(answer.usage.latency_ms / 1000).toFixed(1)} с</li>
+    </ul>
+  </details>
+}

@@ -1,0 +1,47 @@
+{
+  "sources": [
+    {
+      "path": "regulation.md",
+      "key": "demo-contracts",
+      "version": "2026.1",
+      "title": "Регламент агентских договоров",
+      "kind": "regulations",
+      "status": "published",
+      "effective_from": "2026-01-12",
+      "groups": ["demo"],
+      "related_to": ["demo-delegation-north@2026.1", "demo-delegation-east@2026.1"]
+    },
+    {
+      "path": "delegation-north.md",
+      "key": "demo-delegation-north",
+      "version": "2026.1",
+      "title": "Приказ № 17 о делегировании",
+      "kind": "regulations",
+      "status": "published",
+      "effective_from": "2026-02-01",
+      "scope": {"legal_entity": "Маяк Север"},
+      "groups": ["demo"]
+    },
+    {
+      "path": "delegation-east.md",
+      "key": "demo-delegation-east",
+      "version": "2026.1",
+      "title": "Приказ № 21 о делегировании",
+      "kind": "regulations",
+      "status": "published",
+      "effective_from": "2026-02-01",
+      "scope": {"legal_entity": "Маяк Восток"},
+      "groups": ["demo"]
+    },
+    {
+      "path": "licensing.md",
+      "key": "demo-licensing",
+      "version": "2026.1",
+      "title": "Правила лицензирования «Орбита Про»",
+      "kind": "product_licensing",
+      "status": "published",
+      "effective_from": "2026-04-01",
+      "groups": ["demo"]
+    }
+  ]
+}

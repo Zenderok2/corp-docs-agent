@@ -1,0 +1,36 @@
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	header {
+		Content-Security-Policy "default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	@api path /api/* /health/*
+	handle @api {
+		request_body {
+			max_size 32KB
+		}
+		reverse_proxy api:8000 {
+			transport http {
+				response_header_timeout 18s
+			}
+		}
+	}
+
+	handle_path /materials/* {
+		root * /materials
+		file_server
+	}
+
+	handle {
+		root * /usr/share/caddy
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		header / Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

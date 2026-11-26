@@ -1,0 +1,152 @@
+name: corp-docs-agent
+
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "8m"
+    max-file: "3"
+
+x-api: &api
+  image: corp-docs-api:${BUILD_SHA:-dev}
+  environment:
+    APP_ENV: ${APP_ENV:-local}
+    APP_STORAGE_ROOT: /data
+    PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+    STAFF_ACCESS_CODE: ${STAFF_ACCESS_CODE:-}
+    QUALITY_ACCESS_CODE: ${QUALITY_ACCESS_CODE:-}
+    SESSION_SECRET: ${SESSION_SECRET:-}
+    BUILD_SHA: ${BUILD_SHA:-local}
+    LLM_BASE_URL: http://chat:8080/v1
+    LLM_MODEL: ${CHAT_ALIAS:-qwen3-4b-instruct-2507-q4_k_m}
+    RETRIEVAL_MODE: ${RETRIEVAL_MODE:-lexical}
+    EMBEDDING_BASE_URL: http://embeddings:8080/v1
+    EMBEDDING_MODEL: ${EMBEDDING_ALIAS:-qwen3-embedding-0.6b}
+    EMBEDDING_DIMENSIONS: "1024"
+    EMBEDDING_PROFILE_VERSION: qwen3-embedding-0.6b-q8-v1
+    CHROMA_BASE_URL: http://chroma:8000
+    ANSWER_TIMEOUT_SECONDS: ${ANSWER_TIMEOUT_SECONDS:-150}
+    MAX_PENDING_QUESTIONS: ${MAX_PENDING_QUESTIONS:-6}
+  networks: [private]
+  logging: *logging
+
+services:
+  api:
+    <<: *api
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    volumes:
+      - app-data:/data
+    restart: unless-stopped
+    stop_grace_period: 18s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live',timeout=2).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    image: corp-docs-web:${BUILD_SHA:-dev}
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    ports:
+      - "${HTTP_BIND:-127.0.0.1:8080}:80"
+      - "${HTTPS_BIND:-127.0.0.1:8443}:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+      - ./runtime/public:/materials:ro
+    depends_on: [api]
+    networks: [front, private]
+    restart: unless-stopped
+    logging: *logging
+
+  chat:
+    image: ghcr.io/ggml-org/llama.cpp:server-b12535
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --model
+      - /models/chat.gguf
+      - --alias
+      - ${CHAT_ALIAS:-qwen3-4b-instruct-2507-q4_k_m}
+      - --ctx-size
+      - "6144"
+      - --parallel
+      - "1"
+      - --threads
+      - ${CHAT_THREADS:-2}
+      - --no-context-shift
+      - --log-disable
+    volumes:
+      - ./runtime/models:/models:ro
+    networks: [private]
+    restart: unless-stopped
+    logging: *logging
+
+  embeddings:
+    image: ghcr.io/ggml-org/llama.cpp:server-b12535
+    profiles: [semantic]
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --model
+      - /models/embedding.gguf
+      - --alias
+      - ${EMBEDDING_ALIAS:-qwen3-embedding-0.6b}
+      - --embedding
+      - --pooling
+      - last
+      - --ctx-size
+      - "4096"
+      - --batch-size
+      - "1024"
+      - --ubatch-size
+      - "1024"
+      - --parallel
+      - "1"
+      - --threads
+      - ${EMBEDDING_THREADS:-2}
+      - --log-disable
+    volumes:
+      - ./runtime/models:/models:ro
+    networks: [private]
+    restart: unless-stopped
+    logging: *logging
+
+  chroma:
+    image: chromadb/chroma:1.3.5
+    profiles: [semantic]
+    environment:
+      ANONYMIZED_TELEMETRY: "false"
+    volumes:
+      - chroma-data:/data
+    restart: unless-stopped
+    networks: [private]
+    logging: *logging
+
+  operator:
+    <<: *api
+    profiles: [admin]
+    command: ["corp-docs", "import", "/corpus/samples/catalog.json"]
+    volumes:
+      - app-data:/data
+      - ./data:/corpus:ro
+
+networks:
+  front:
+  private:
+    internal: true
+
+volumes:
+  app-data:
+  caddy-data:
+  caddy-config:
+  chroma-data:

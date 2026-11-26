@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "corp-docs-agent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.121.3",
+  "httpx==0.28.1",
+  "pydantic==2.12.5",
+  "python-dotenv==1.2.1",
+  "snowballstemmer==2.2.0",
+  "tzdata==2025.2",
+  "uvicorn==0.38.0",
+]
+
+[project.optional-dependencies]
+importers = ["pymupdf==1.26.6", "python-docx==1.2.0"]
+test = ["pytest==8.4.2"]
+
+[project.scripts]
+corp-docs = "corp_docs_agent.ingestion.catalog:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
