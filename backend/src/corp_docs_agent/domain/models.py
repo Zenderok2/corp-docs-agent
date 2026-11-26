@@ -87,6 +87,7 @@ class SourceEntry(StrictModel):
     path: str = Field(min_length=1, max_length=500)
     key: Key
     version: Key
+    revision_label: ShortText | None = None
     title: ShortText
     kind: Literal["regulations", "product_licensing"]
     status: Literal["published", "unknown", "withdrawn"] = "unknown"

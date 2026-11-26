@@ -246,6 +246,8 @@ class AnswerWorker:
                         "version": item.version.metadata["version"], "status": item.version.publication_status_on(as_of),
                         "missing_scope": item.missing_scope, "text": item.text,
                         "scope": {field: value for field, value in item.version.metadata["scope"].items() if value},
+                        **{key: item.locator[key] for key in ("section_path", "clause_number", "column_header")
+                           if item.locator.get(key)},
                     }
                     for number, item in enumerate(candidates, 1)
                 ],
@@ -299,7 +301,7 @@ class AnswerWorker:
         verification_started = monotonic()
         if message_code in {"answered", "partial", "conflict"}:
             findings = concise_excerpts(evidence)
-            if evidence and not findings:
+            if evidence and not findings and not any(source.locator.get("column_header") for source, _, _ in evidence):
                 deadline = started + min(getattr(self.chat, "timeout", 90.0), SUMMARY_BUDGET_SECONDS)
                 findings = self.summarize(question["question"], evidence, department_refs, usage, deadline)
         trace.append({

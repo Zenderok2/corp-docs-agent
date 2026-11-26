@@ -20,14 +20,15 @@ export type Session = {
 
 export type Locator =
   | { type: 'pdf'; page_number: number; bbox: number[] }
-  | { type: 'docx_paragraph'; section_path: string[]; paragraph_index: number }
-  | { type: 'docx_table_cell'; section_path: string[]; table_path: { table_index?: number; row_index?: number; column_index?: number }[]; paragraph_index: number }
+  | { type: 'docx_paragraph'; section_path: string[]; paragraph_index: number; clause_number?: string }
+  | { type: 'docx_table_cell'; section_path: string[]; table_path: { table_index?: number; row_index?: number; column_index?: number }[]; paragraph_index: number; clause_number?: string; column_header?: string }
   | { type: 'text'; section_path: string[]; line_start: number; line_end: number }
 
 export type SourceVersion = {
   id: string
   document_id: string
   version_label: string
+  revision_label?: string | null
   title: string
   publication_status: 'published' | 'unknown'
   effective_from: string | null
@@ -201,16 +202,22 @@ export function post<T>(path: string, data: unknown, idempotencyKey?: string): P
 
 export function formatLocator(locator: Locator): string {
   if (locator.type === 'pdf') return 'Страница ' + locator.page_number
-  if (locator.type === 'docx_paragraph') return 'Абзац ' + locator.paragraph_index
   if (locator.type === 'text') {
     return locator.line_start === locator.line_end
       ? 'Строка ' + locator.line_start
       : `Строки ${locator.line_start}–${locator.line_end}`
   }
-  return locator.table_path.map((step) => step.table_index
+  const clause = locator.clause_number ? `Пункт ${locator.clause_number} · ` : ''
+  if (locator.type === 'docx_paragraph') return clause + 'Абзац ' + locator.paragraph_index
+  const table = locator.table_path.map((step) => step.table_index
     ? 'Таблица ' + step.table_index
     : `строка ${step.row_index}, столбец ${step.column_index}`,
   ).concat('абзац ' + locator.paragraph_index).join(', ')
+  return clause + table + (locator.column_header ? ` · «${locator.column_header}»` : '')
+}
+
+export function formatRevision(source: SourceVersion): string {
+  return source.revision_label ?? `Редакция ${source.version_label}`
 }
 
 export function formatDate(date: string): string {

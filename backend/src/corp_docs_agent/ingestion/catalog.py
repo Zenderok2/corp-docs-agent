@@ -10,13 +10,18 @@ from pydantic import ValidationError
 
 from corp_docs_agent.core.settings import Settings
 from corp_docs_agent.domain.models import Catalog, SourceEntry
-from corp_docs_agent.ingestion.files import FORMATS, ImportFailure, chunk_offsets, parse_file
+from corp_docs_agent.ingestion.files import DOCX_LOCATOR_REVISION, FORMATS, ImportFailure, chunk_offsets, parse_file
 from corp_docs_agent.persistence.store import Store, corpus_revision, json_dump, now
 from corp_docs_agent.retrieval.terms import index_text
 
 
 def version_id(entry: SourceEntry) -> str:
     return f"{entry.key}@{entry.version}"
+
+
+def heading_index(locator: dict) -> str:
+    headings = locator.get("section_path", []) + [locator.get("column_header", "")]
+    return index_text(" ".join(headings))
 
 
 def import_entry(settings: Settings, store: Store, root: Path, entry: SourceEntry) -> dict:
@@ -35,8 +40,12 @@ def import_entry(settings: Settings, store: Store, root: Path, entry: SourceEntr
     if len(content) > limit:
         raise ImportFailure("file_too_large")
     checksum = sha256(content).hexdigest()
-    excluded = {"path", "publication_confirmed_on"} if entry.publication_confirmed_on is None else {"path"}
-    metadata = json_dump(entry.model_dump(mode="json", exclude=excluded))
+    excluded = {"path"}
+    excluded.update(field for field in ("publication_confirmed_on", "revision_label") if getattr(entry, field) is None)
+    properties = entry.model_dump(mode="json", exclude=excluded)
+    if suffix == ".docx":
+        properties["locator_revision"] = DOCX_LOCATOR_REVISION
+    metadata = json_dump(properties)
     with store.connect() as conn:
         existing = conn.execute("SELECT * FROM document_versions WHERE id = ?", (reference,)).fetchone()
     if existing and checksum != existing["sha256"]:
@@ -59,7 +68,8 @@ def import_entry(settings: Settings, store: Store, root: Path, entry: SourceEntr
     if existing and existing["metadata"] == metadata:
         return {"id": reference, "status": "unchanged", "warnings": json.loads(existing["warnings"])}
 
-    blocks, warnings = ([], json.loads(existing["warnings"])) if existing else parse_file(original)
+    upgrade_locators = existing and suffix == ".docx" and json.loads(existing["metadata"]).get("locator_revision") != DOCX_LOCATOR_REVISION
+    blocks, warnings = parse_file(original) if not existing or upgrade_locators else ([], json.loads(existing["warnings"]))
     with store.connect(write=True) as conn:
         # Imports are administrative CLI jobs. This guard also covers concurrent invocations.
         confirmed = conn.execute("SELECT sha256, file_suffix, metadata FROM document_versions WHERE id = ?", (reference,)).fetchone()
@@ -69,6 +79,16 @@ def import_entry(settings: Settings, store: Store, root: Path, entry: SourceEntr
             return {"id": reference, "status": "unchanged", "warnings": warnings}
         conn.execute("INSERT OR IGNORE INTO documents VALUES (?)", (entry.key,))
         if confirmed:
+            if upgrade_locators:
+                old_blocks = conn.execute("SELECT id, text FROM blocks WHERE version_id = ? ORDER BY ordinal", (reference,)).fetchall()
+                if [row["text"] for row in old_blocks] != [block.text for block in blocks]:
+                    raise ImportFailure("locator_upgrade_text_changed")
+                for row, block in zip(old_blocks, blocks, strict=True):
+                    conn.execute("UPDATE blocks SET locator = ? WHERE id = ?", (json_dump(block.locator), row["id"]))
+                    conn.execute(
+                        "UPDATE chunks_fts SET heading = ? WHERE chunk_id IN (SELECT id FROM chunks WHERE block_id = ?)",
+                        (heading_index(block.locator), row["id"]),
+                    )
             conn.execute("UPDATE document_versions SET metadata = ? WHERE id = ?", (metadata, reference))
             conn.execute(
                 """UPDATE chunks_fts SET title = ? WHERE chunk_id IN (
@@ -88,7 +108,7 @@ def import_entry(settings: Settings, store: Store, root: Path, entry: SourceEntr
                     "INSERT INTO blocks VALUES (?, ?, ?, ?, ?)",
                     (block_id, reference, ordinal, block.text, json_dump(block.locator)),
                 )
-                heading = index_text(" ".join(block.locator.get("section_path", [])))
+                heading = heading_index(block.locator)
                 for start, end in chunk_offsets(block.text):
                     chunk_id = f"{block_id}:{start}"
                     conn.execute("INSERT INTO chunks VALUES (?, ?, ?, ?)", (chunk_id, block_id, start, end))

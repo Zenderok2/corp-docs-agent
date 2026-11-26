@@ -21,7 +21,7 @@ GLOSSARY = {
     "ам": ("аккаунт менеджер", "account manager"),
     "ап": ("администратор проекта", "project administrator"),
     "цк": ("центр компетенций",),
-    "диб": ("дирекция информационной безопасности",),
+    "диб": ("дирекция информационной безопасности", "дирекция иб"),
     "уиб": ("управление информационной безопасности",),
     "знп": ("заявка на пресейл", "presale request"),
     "рм": ("ресурс менеджер", "ресурсный менеджер", "resource manager"),
@@ -100,7 +100,7 @@ def fts_query(terms: list[str]) -> str:
 def scope_key(text: str) -> str:
     tokens = stems(words(text))
     alias = ALIASES.get(tuple(tokens))
-    return alias if alias in {"диб", "уиб"} else " ".join(words(text))
+    return alias if alias in {"диб", "уиб"} else " ".join(tokens)
 
 
 def glossary_hints(text: str) -> list[str]:

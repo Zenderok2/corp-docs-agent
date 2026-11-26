@@ -7,7 +7,7 @@ import re
 import sqlite3
 
 from corp_docs_agent.persistence.store import CorpusVersion, json_dump
-from corp_docs_agent.retrieval.terms import concepts, fts_query, query_terms, scope_key, words
+from corp_docs_agent.retrieval.terms import concepts, fts_query, index_text, query_terms, scope_key
 
 
 CANDIDATE_LIMIT = 10
@@ -32,10 +32,10 @@ def normalized(value: str) -> str:
 
 
 def mentioned_departments(text: str, labels: set[str]) -> list[str]:
-    text_words = " " + " ".join(words(text)) + " "
+    text_words = f" {index_text(text)} "
     named_aliases = {"диб", "уиб"}.intersection(concepts(text))
     return [label for label in sorted(labels) if (
-        f" {' '.join(words(label))} " in text_words or scope_key(label) in named_aliases
+        f" {scope_key(label)} " in text_words or scope_key(label) in named_aliases
     )]
 
 

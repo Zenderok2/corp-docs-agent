@@ -43,3 +43,11 @@ expected_claims, expected_citations, forbidden_claims и видимость до
 Запускайте отдельно для FTS5 и для гибридного профиля. Параметр
 `--verify-quality` публикует вымышленный ответ в тестовой базе и требует
 `QUALITY_ACCESS_CODE` в окружении клиента.
+
+Для корпуса с ограниченным доступом используйте `python evals/corpus.py
+--cases data/inbox/acceptance.json --output runtime/acceptance.json` и передайте
+`STAFF_ACCESS_CODE` в окружении клиента. В файле задайте `versions` со списком
+доступных участнику редакций и `cases` с полями `id`, `request`, `outcomes`.
+В `citations` можно требовать `version`, `clause_number`, `column_header`,
+фрагменты `contains` и группу `department`. Поле `quality_mail` задаёт ожидаемое
+наличие письма. Отчёт сохраняет исход, локаторы и usage без вопросов и цитат.

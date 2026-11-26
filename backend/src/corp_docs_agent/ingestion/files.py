@@ -10,6 +10,9 @@ MAX_CHARACTERS = 3_000_000
 MAX_PAGES = 1_200
 CHUNK_SIZE = 660
 CHUNK_OVERLAP = 90
+DOCX_LOCATOR_REVISION = 2
+NUMBERED_SECTION = re.compile(r"^([1-9]\d{0,2})\.[ \t\u00a0]+[^\n]{3,157}$")
+NUMBERED_CLAUSE = re.compile(r"^([1-9]\d*(?:\.\d+)+)\.?(?=\s|$)")
 
 
 class ImportFailure(Exception):
@@ -56,17 +59,36 @@ def docx_blocks(path: Path) -> Iterator[Block]:
         if len(files) > 2_000 or sum(member.file_size for member in files) > 70 * 1024 * 1024:
             raise ImportFailure("docx_uncompressed_size_limit")
     document = Document(path)
+    numbered_sections = set()
+    pending_section = None
+    for index, paragraph in enumerate(document.paragraphs, 1):
+        text = paragraph.text.strip()
+        if heading := NUMBERED_SECTION.fullmatch(text):
+            pending_section = (index, heading[1])
+        elif clause := NUMBERED_CLAUSE.match(text):
+            if pending_section and clause[1].split(".", 1)[0] == pending_section[1]:
+                numbered_sections.add(pending_section[0])
+            pending_section = None
+
     headings: list[tuple[int, str]] = []
+    clause_number = None
     paragraph_index = 0
     table_index = 0
 
-    def section_path() -> list[str]:
-        return [text for _, text in headings]
+    def context() -> dict:
+        locator = {"section_path": [text for _, text in headings]}
+        if clause_number:
+            locator["clause_number"] = clause_number
+        return locator
 
     def table_blocks(table: Table, table_path: list[dict]) -> Iterator[Block]:
         seen_cells = set()
+        column_headers = {}
         for row_index, row in enumerate(table.rows, 1):
+            header_row = bool(row._tr.xpath("./w:trPr/w:tblHeader"))
             for column_index, cell in enumerate(row.cells, row.grid_cols_before + 1):
+                if header_row and cell.text.strip():
+                    column_headers[column_index] = " ".join(cell.text.split())[:160]
                 if cell._tc in seen_cells:
                     continue
                 seen_cells.add(cell._tc)
@@ -77,12 +99,14 @@ def docx_blocks(path: Path) -> Iterator[Block]:
                     if isinstance(item, Paragraph):
                         cell_paragraph += 1
                         if item.text.strip():
-                            yield Block(item.text.strip(), {
-                                "type": "docx_table_cell",
-                                "section_path": section_path(),
+                            locator = {
+                                "type": "docx_table_cell", **context(),
                                 "table_path": cell_path,
                                 "paragraph_index": cell_paragraph,
-                            })
+                            }
+                            if not header_row and column_index in column_headers:
+                                locator["column_header"] = column_headers[column_index]
+                            yield Block(item.text.strip(), locator)
                     else:
                         nested_table += 1
                         yield from table_blocks(item, cell_path + [{"table_index": nested_table}])
@@ -95,12 +119,15 @@ def docx_blocks(path: Path) -> Iterator[Block]:
                 continue
             style = item.style.style_id if item.style is not None else ""
             match = re.fullmatch(r"(?:Heading|Заголовок)([1-9])", style, re.IGNORECASE)
-            if match:
-                level = int(match[1])
+            if match or paragraph_index in numbered_sections:
+                level = int(match[1]) if match else 1
                 headings = [(old_level, value) for old_level, value in headings if old_level < level]
                 headings.append((level, text[:160]))
+                clause_number = None
+            elif clause := NUMBERED_CLAUSE.match(text):
+                clause_number = clause[1]
             yield Block(text, {
-                "type": "docx_paragraph", "section_path": section_path(),
+                "type": "docx_paragraph", **context(),
                 "paragraph_index": paragraph_index,
             })
         elif isinstance(item, Table):

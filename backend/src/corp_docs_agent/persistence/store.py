@@ -169,6 +169,7 @@ class CorpusVersion:
             "id": self.id,
             "document_id": self.document_id,
             "version_label": self.metadata["version"],
+            "revision_label": self.metadata.get("revision_label"),
             "title": self.metadata["title"],
             "kind": self.metadata["kind"],
             "publication_status": self.metadata["status"],

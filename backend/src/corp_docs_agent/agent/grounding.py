@@ -49,6 +49,8 @@ def concise_excerpts(evidence: list[tuple[Candidate, int, int]]) -> list[dict]:
     for index, (source, _, _) in enumerate(evidence):
         clause = CLAUSE_NUMBER.sub("", source.text) if source.start == 0 else source.text
         text = " ".join(clause.split())
+        if text and (column := source.locator.get("column_header")):
+            text = f"{column} — {text}"
         if source.missing_scope or not text or len(text) > 195:
             return []
         excerpts.append({"text": text, "refs": [index]})
@@ -73,7 +75,7 @@ def verification_input(
         if scopes and not applicable:
             return [], []
         passages = [evidence[index][0] for index in indices]
-        if any(source.missing_scope for source in passages):
+        if any(source.missing_scope or source.locator.get("column_header") for source in passages):
             return [], []
         text = " ".join(finding.text.split())
         originals = "\n".join(source.text for source in passages)

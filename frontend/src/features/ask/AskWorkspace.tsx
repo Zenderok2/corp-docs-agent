@@ -4,7 +4,7 @@ import {
   ArrowRight, ArrowUp, BookOpenCheck, Check, ChevronDown, CircleHelp, ClipboardCheck,
   FileText, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, ScanText, Search, Sparkles,
 } from 'lucide-react'
-import { api, describeError, formatDate, formatLocator, post, scopeFields } from '../../shared/api'
+import { api, describeError, formatDate, formatLocator, formatRevision, post, scopeFields } from '../../shared/api'
 import type { Answer, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
 import { MailThread } from '../documents/MailThread'
 import { SourceDialog } from '../sources/SourceDialog'
@@ -241,7 +241,7 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
         {result.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
           <button type="button" className="source-link" onClick={() => setSourceId(citation.id)}>
             <span className="source-number">{index + 1}</span>
-            <span><strong>{citation.title}</strong><small>{formatLocator(citation.locator)} · Ред. {citation.version_label}</small></span>
+            <span><strong>{citation.title}</strong><small>{formatLocator(citation.locator)} · {formatRevision(citation)}</small></span>
             <ArrowRight size={16} className="source-arrow" />
           </button>
           <blockquote>{citation.quote}</blockquote>
@@ -274,7 +274,11 @@ function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: 
     const summarized = new Set(findings.flatMap((finding) => finding.citation_ids))
     const lines = [
       ...findings,
-      ...citations.filter((citation) => !summarized.has(citation.id)).map((citation) => ({ text: citation.quote, citation_ids: [citation.id] })),
+      ...citations.filter((citation) => !summarized.has(citation.id)).map((citation) => ({
+        text: citation.locator.type === 'docx_table_cell' && citation.locator.column_header
+          ? `${citation.locator.column_header} — ${citation.quote}` : citation.quote,
+        citation_ids: [citation.id],
+      })),
     ]
     return <ol className="answer-quotes">{lines.map(({ text, citation_ids }, index) => <li key={index}>
       <p>{text}</p>

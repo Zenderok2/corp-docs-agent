@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { FileSearch, LoaderCircle } from 'lucide-react'
-import { api, describeError, formatDate, formatLocator, scopeFields } from '../../shared/api'
+import { api, describeError, formatDate, formatLocator, formatRevision, scopeFields } from '../../shared/api'
 import type { Citation } from '../../shared/api'
 import { Dialog } from '../../shared/Dialog'
 
@@ -22,7 +22,7 @@ export function SourceDialog({ id, onClose }: { id: string; onClose: () => void 
       {source && <>
         <div className="source-meta">
           <span className="square-icon"><FileSearch size={20} /></span>
-          <div><h3>{source.title}</h3><p>{formatLocator(source.locator)} · Редакция {source.version_label}</p></div>
+          <div><h3>{source.title}</h3><p>{formatLocator(source.locator)} · {formatRevision(source)}</p></div>
         </div>
         {'section_path' in source.locator && source.locator.section_path.length > 0 && (
           <p className="soft">{source.locator.section_path.join(' / ')}</p>

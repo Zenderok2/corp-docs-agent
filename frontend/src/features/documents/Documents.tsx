@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowRight, FileText, FolderOpen, LoaderCircle } from 'lucide-react'
-import { api, describeError, formatDate, formatLocator, scopeFields } from '../../shared/api'
+import { api, describeError, formatDate, formatLocator, formatRevision, scopeFields } from '../../shared/api'
 import type { Locator, Page, SourceVersion } from '../../shared/api'
 import { Dialog } from '../../shared/Dialog'
 
@@ -44,7 +44,7 @@ export function Documents() {
       {items.map((item) => <button type="button" className="document-row" key={item.id} onClick={() => setOpen(item)}>
         <span className="square-icon"><FileText size={19} /></span>
         <span className="document-name"><strong>{item.title}</strong>
-          <small>{item.kind === 'regulations' ? 'Регламенты' : 'Продукты и лицензирование'} · Редакция {item.version_label}</small>
+          <small>{item.kind === 'regulations' ? 'Регламенты' : 'Продукты и лицензирование'} · {formatRevision(item)}</small>
         </span>
         <span className={item.publication_status === 'published' ? 'tag green' : 'tag amber'}>
           {item.publication_status === 'published' ? (item.effective_from ? 'С ' + formatDate(item.effective_from) : 'Опубликован') : 'Статус уточняется'}
@@ -86,7 +86,7 @@ function DocumentDialog({ version, onClose }: { version: SourceVersion; onClose:
   }, [])
 
   return <Dialog title={version.title} onClose={onClose}>
-    <p className="soft">Редакция {version.version_label}
+    <p className="soft">{formatRevision(version)}
       {version.effective_from && ' · С ' + formatDate(version.effective_from)}
       {version.effective_to && ' по ' + formatDate(version.effective_to)}
     </p>
