@@ -13,7 +13,7 @@ from corp_docs_agent.api.main import create_app
 from corp_docs_agent.core.settings import Settings
 from corp_docs_agent.ingestion.catalog import import_catalog
 from corp_docs_agent.persistence.store import Store, visible_versions
-from corp_docs_agent.providers.llama import Decision, Finding, Findings, Verification
+from corp_docs_agent.providers.llama import Coverage, Decision, Finding, Findings, Verification
 from corp_docs_agent.retrieval.search import eligible_versions, lexical_ids
 from corp_docs_agent.retrieval.terms import query_terms
 
@@ -184,6 +184,27 @@ def test_clear_out_of_scope_requests_do_not_escalate(settings):
             assert result["quality_case"] is None and result["usage"]["chat_calls"] == 0
         id = client.post("/api/v1/questions", json={"question": "Как рассчитать премию за сделку по регламенту?"}).json()["id"]
         assert wait_question(client, id)["result"]["outcome"] == "not_found"
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_partial_answer_uses_selected_evidence_for_coverage_review(settings, complete):
+    class CoverageChat(ScriptedChat):
+        def decide(self, data):
+            ref = next(source["ref"] for source in data["sources"] if source["text"].startswith("3.2."))
+            return Decision(outcome="partial", evidence=[ref], clarification=""), {"chat_calls": 1}
+
+        def check_coverage(self, data, timeout):
+            assert data["question"] == LICENSE_QUESTION and len(data["citations"]) == 1
+            assert "не более 90 календарных дней" in data["citations"][0]["text"]
+            return Coverage(complete=complete), {"chat_calls": 1}
+
+    with TestClient(create_app(settings, CoverageChat())) as client:
+        client.get("/api/v1/session")
+        question_id = client.post("/api/v1/questions", json={"question": LICENSE_QUESTION}).json()["id"]
+        result = wait_question(client, question_id)["result"]
+        assert result["outcome"] == ("answered" if complete else "partial")
+        assert bool(result["quality_case"]) is not complete
+        assert result["usage"]["chat_calls"] == 2
 
 
 def test_dialog_citations_and_practice_survive_restart(settings):

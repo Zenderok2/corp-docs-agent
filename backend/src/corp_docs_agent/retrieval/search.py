@@ -26,6 +26,11 @@ class Candidate:
     version: CorpusVersion
     missing_scope: dict[str, str]
 
+    def topic_text(self) -> str:
+        scope = self.version.metadata["scope"].get("department") or ""
+        section = self.locator.get("section_path", [])[-1:]
+        return " ".join([scope, *section, self.locator.get("column_header", ""), self.text])
+
 
 def normalized(value: str) -> str:
     return " ".join(value.casefold().replace("ё", "е").split())

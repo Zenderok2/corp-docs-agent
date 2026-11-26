@@ -213,6 +213,7 @@ class AnswerWorker:
         message_code = "no_evidence" if visible else "empty_corpus"
         evidence: list = []
         clarification: dict | None = None
+        review_partial = False
         field, variants = None, {}
         for name in ("legal_entity", "department"):
             topical = scope_passages(name, question["question"], primary, semantic_support)
@@ -230,7 +231,7 @@ class AnswerWorker:
             outcome = "needs_clarification"
             clarification = {"question": SCOPE_QUESTIONS[field], "field": field, "options": options}
         elif candidates and topic_supported(
-            question["question"], [item.text for item in candidates],
+            question["question"], [item.topic_text() for item in candidates],
             semantic_match=any(item.id in semantic_support for item in candidates),
         ):
             model_started = monotonic()
@@ -261,12 +262,13 @@ class AnswerWorker:
                 decision, chat_usage = self.chat.decide(assessment)
                 add_chat_usage(usage, chat_usage)
                 outcome, clarifier = decision.outcome, decision.clarification
+                review_partial = outcome == "partial"
                 if outcome != "not_found":
                     evidence = locate_evidence(decision, candidates)
             trace.append({"step": "assessment", "duration_ms": elapsed_ms(model_started)})
             if outcome == "answered" and not topic_supported(
                 question["question"],
-                [source.text for source, _, _ in evidence],
+                [source.topic_text() for source, _, _ in evidence],
                 semantic_match=any(source.id in semantic_support for source, _, _ in evidence),
             ):
                 outcome, evidence = "not_found", []
@@ -299,6 +301,10 @@ class AnswerWorker:
             message_code = outcome
         findings = []
         verification_started = monotonic()
+        if message_code == "partial" and review_partial and self.confirm_coverage(
+            question["question"], context, evidence, usage, started + getattr(self.chat, "timeout", 90.0),
+        ):
+            outcome = message_code = "answered"
         if message_code in {"answered", "partial", "conflict"}:
             findings = concise_excerpts(evidence)
             if evidence and not findings and not any(source.locator.get("column_header") for source, _, _ in evidence):
@@ -314,6 +320,26 @@ class AnswerWorker:
             "department_refs": department_refs,
             "finding_refs": findings,
         }, evidence
+
+    def confirm_coverage(self, question: str, context: dict, evidence: list, usage: dict, deadline: float) -> bool:
+        remaining = deadline - monotonic()
+        if remaining < 3 or not evidence or not hasattr(self.chat, "check_coverage"):
+            return False
+        sources = [source for source, _, _ in evidence]
+        if any(source.missing_scope for source in sources) or not topic_supported(question, [item.topic_text() for item in sources]):
+            return False
+        checks = {
+            "question": question, "context": context,
+            "citations": [{"text": source.text, "column_header": source.locator.get("column_header"),
+                           "scope": source.version.metadata["scope"]} for source in sources],
+        }
+        try:
+            coverage, call_usage = self.chat.check_coverage(checks, min(12, remaining))
+        except ProviderError:
+            add_chat_usage(usage, {})
+            return False
+        add_chat_usage(usage, call_usage)
+        return coverage.complete
 
     def assess_departments(
         self, assessment: dict, candidates: list[Candidate], department_versions: dict,
@@ -331,7 +357,7 @@ class AnswerWorker:
                 if item.version.id in versions
             ][:5]
             if not topic_supported(
-                assessment["question"], [item.text for item, _ in scope_matches],
+                assessment["question"], [item.topic_text() for item, _ in scope_matches],
                 semantic_match=any(item.id in semantic_support for item, _ in scope_matches),
             ):
                 outcomes.append("not_found")
@@ -357,7 +383,7 @@ class AnswerWorker:
             add_chat_usage(usage, call_usage)
             outcome = decision.outcome
             if outcome == "answered" and not topic_supported(
-                assessment["question"], [item.text for item, _, _ in selected],
+                assessment["question"], [item.topic_text() for item, _, _ in selected],
                 semantic_match=any(item.id in semantic_support for item, _, _ in selected),
             ):
                 outcome, selected = "not_found", []
