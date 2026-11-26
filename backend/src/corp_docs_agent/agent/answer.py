@@ -11,8 +11,8 @@ from corp_docs_agent.persistence.quality_mail import send_request
 from corp_docs_agent.persistence.store import Store, corpus_revision, json_dump, now, visible_versions
 from corp_docs_agent.providers.llama import Chat, Decision, ProviderError
 from corp_docs_agent.retrieval.search import (
-    Candidate, amount_applies, eligible_versions, expand_evidence, lexical_ids, load_candidates, mentioned_departments, rank_ids,
-    search_terms, select_evidence, topic_supported,
+    Candidate, amount_applies, eligible_versions, expand_evidence, lexical_ids, load_candidates, load_numbered_clauses,
+    mentioned_departments, rank_ids, search_terms, select_evidence, topic_supported,
 )
 from corp_docs_agent.retrieval.terms import canonical_question, glossary_hints, scope_key
 
@@ -203,7 +203,9 @@ class AnswerWorker:
             first_by_department = {}
             for item in anchor_candidates:
                 first_by_department.setdefault(scope_key(item.version.metadata["scope"]["department"]), item)
-            candidates = select_evidence(primary + anchor_candidates, adjacent, list(first_by_department.values()))
+            ranked = primary + anchor_candidates
+            clauses = load_numbered_clauses(conn, ranked + adjacent, versions, missing, combined)
+            candidates = select_evidence(ranked, adjacent, list(first_by_department.values()), clauses)
         trace = [{
             "step": "retrieval", "lexical_hits": len(lexical), "vector_hits": len(vector_ids),
             "related_hits": len(adjacent), "candidates": len(candidates), "vector_state": vector_state,

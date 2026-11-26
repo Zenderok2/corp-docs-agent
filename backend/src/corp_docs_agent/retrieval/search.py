@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date
 import json
@@ -11,6 +11,7 @@ from corp_docs_agent.retrieval.terms import concepts, fts_query, index_text, que
 
 
 CANDIDATE_LIMIT = 10
+VERSION_CANDIDATE_LIMIT = 4
 RUBLE_AMOUNT = r"(?P<sum>\d{1,3}(?:\s\d{3})+|\d+(?:[.,]\d{1,2})?)\s*(?:руб(?:лей|ля|ль|\.)?|₽)(?![а-я])"
 QUESTION_AMOUNT = re.compile(RUBLE_AMOUNT, re.IGNORECASE)
 LIMIT_AMOUNT = re.compile(r"\b(?P<operator>не более|не менее|свыше|до|от)\s+" + RUBLE_AMOUNT, re.IGNORECASE)
@@ -160,16 +161,80 @@ def expand_evidence(
     ]
 
 
-def select_evidence(primary: list[Candidate], adjacent: list[Candidate], anchors: list[Candidate]) -> list[Candidate]:
+def load_numbered_clauses(
+    conn: sqlite3.Connection, candidates: list[Candidate], versions: dict, missing_scope: dict, question: str,
+) -> dict[str, list[Candidate]]:
+    """Find complete, short DOCX clauses around ranked evidence."""
+    anchor_ids = list(dict.fromkeys(
+        item.block_id for item in candidates
+        if item.locator.get("type") == "docx_paragraph" and item.locator.get("clause_number")
+    ))
+    if not anchor_ids:
+        return {}
+
+    # The window also includes one extra paragraph at either end of a clause
+    # large enough to exceed the per-version budget.
+    rows = conn.execute(
+        """SELECT anchor.id AS anchor_id, paragraph.ordinal, chunk.id AS chunk_id,
+                  chunk.end_offset = length(paragraph.text) AS whole_paragraph
+           FROM blocks anchor
+           JOIN blocks paragraph ON paragraph.version_id = anchor.version_id
+             AND paragraph.ordinal BETWEEN anchor.ordinal - ? AND anchor.ordinal + ?
+           JOIN chunks chunk ON chunk.block_id = paragraph.id AND chunk.start_offset = 0
+           WHERE anchor.id IN (SELECT value FROM json_each(?))
+             AND json_extract(paragraph.locator, '$.type') = 'docx_paragraph'
+             AND json_extract(paragraph.locator, '$.clause_number') = json_extract(anchor.locator, '$.clause_number')
+             AND json_extract(paragraph.locator, '$.section_path') IS json_extract(anchor.locator, '$.section_path')
+           ORDER BY anchor.id, paragraph.ordinal""",
+        (VERSION_CANDIDATE_LIMIT, VERSION_CANDIDATE_LIMIT, json_dump(anchor_ids)),
+    )
+    spans = defaultdict(list)
+    for row in rows:
+        spans[row["anchor_id"]].append(row)
+
+    groups = {
+        anchor: [row["chunk_id"] for row in span]
+        for anchor, span in spans.items()
+        if (
+            1 < len(span) <= VERSION_CANDIDATE_LIMIT
+            and span[-1]["ordinal"] - span[0]["ordinal"] + 1 == len(span)
+            and all(row["whole_paragraph"] for row in span)
+        )
+    }
+    chunk_ids = list(dict.fromkeys(chunk_id for group in groups.values() for chunk_id in group))
+    parts = {
+        item.id: item for item in load_candidates(conn, chunk_ids, versions, missing_scope)
+        if amount_applies(question, item.text)
+    }
+    return {
+        anchor: [parts[chunk_id] for chunk_id in group]
+        for anchor, group in groups.items() if all(chunk_id in parts for chunk_id in group)
+    }
+
+
+def select_evidence(
+    primary: list[Candidate], adjacent: list[Candidate], anchors: list[Candidate],
+    clauses: dict[str, list[Candidate]] | None = None,
+) -> list[Candidate]:
+    clauses = clauses or {}
+    ranked = primary[:5] + adjacent[:3] + primary[5:] + adjacent[3:]
+    # Keep the first hit from each department ahead of clause expansion.
+    ordered = [(item, [item]) for item in anchors]
+    ordered.extend((item, clauses.get(item.block_id, [item])) for item in ranked)
     version_counts: Counter = Counter()
     visited_blocks = set()
     selected = []
-    for candidate in anchors + primary[:5] + adjacent[:3] + primary[5:] + adjacent[3:]:
-        if candidate.block_id in visited_blocks or version_counts[candidate.version.id] == 4:
+    for candidate, group in ordered:
+        version_id = candidate.version.id
+        slots = min(CANDIDATE_LIMIT - len(selected), VERSION_CANDIDATE_LIMIT - version_counts[version_id])
+        if not slots:
             continue
-        visited_blocks.add(candidate.block_id)
-        version_counts[candidate.version.id] += 1
-        selected.append(candidate)
+        additions = [item for item in group if item.block_id not in visited_blocks]
+        if len(additions) > slots:
+            additions = [] if candidate.block_id in visited_blocks else [candidate]
+        visited_blocks.update(item.block_id for item in additions)
+        version_counts[version_id] += len(additions)
+        selected.extend(additions)
         if len(selected) == CANDIDATE_LIMIT:
             break
     return selected

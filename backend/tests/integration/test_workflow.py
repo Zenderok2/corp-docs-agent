@@ -120,6 +120,49 @@ def test_department_variants_complex_projects_and_glossary(settings, tmp_path):
         assert unresolved["quality_case"]["status"] == "pending"
 
 
+def test_numbered_docx_keeps_the_intro_and_both_estimate_deadlines(settings, tmp_path):
+    from docx import Document
+
+    rule = [
+        "1.1. Приведённые ниже сроки рекомендованы:",
+        "Для точной оценки — 5 рабочих дней;",
+        "Для бюджетной оценки — 3 рабочих дня.",
+    ]
+    document = Document()
+    document.add_paragraph("1. Обработка заявок")
+    for paragraph in rule:
+        document.add_paragraph(paragraph)
+    document.add_paragraph("1.2. Точную оценку передают менеджеру после проверки.")
+    document.add_paragraph("1.3. Дни работы по точной оценке отражают в журнале.")
+    document.add_paragraph("1.4. Бюджетную оценку прикладывают к заявке.")
+    path = tmp_path / "estimates.docx"
+    document.save(path)
+    manifest = tmp_path / "estimate-catalog.json"
+    manifest.write_text(json.dumps({"sources": [{
+        "path": path.name, "key": "estimates", "version": "test", "title": "Порядок работы",
+        "kind": "regulations", "status": "published", "groups": ["demo"],
+    }]}), encoding="utf-8")
+    assert import_catalog(settings, manifest)[0]["status"] == "imported"
+
+    class EstimateChat(ScriptedChat):
+        def decide(self, data):
+            rule_sources = [source for source in data["sources"] if source.get("clause_number") == "1.1"]
+            return Decision(
+                outcome="answered", evidence=[source["ref"] for source in rule_sources], clarification="",
+            ), {}
+
+    with TestClient(create_app(settings, EstimateChat())) as client:
+        client.get("/api/v1/session")
+        question_id = client.post("/api/v1/questions", json={
+            "question": "Сколько дней закладывать на точную и бюджетную оценку?",
+            "document_ids": ["estimates"],
+        }).json()["id"]
+        result = wait_question(client, question_id)["result"]
+        assert result["outcome"] == "answered"
+        assert [citation["quote"] for citation in result["citations"]] == rule
+        assert all(citation["locator"]["clause_number"] == "1.1" for citation in result["citations"])
+
+
 @pytest.mark.parametrize(("statement", "approve", "checked"), [
     ("Внешнему подрядчику выдают гостевую лицензию на срок договора и не более 90 календарных дней.", True, True),
     ("Подрядчику выдают гостевую лицензию на 120 календарных дней.", True, False),
