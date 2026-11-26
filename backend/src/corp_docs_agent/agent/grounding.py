@@ -2,6 +2,7 @@ import re
 
 from corp_docs_agent.providers.llama import Finding
 from corp_docs_agent.retrieval.search import Candidate
+from corp_docs_agent.retrieval.terms import index_text
 
 
 NUMBERS = re.compile(r"\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d+)?")
@@ -14,6 +15,15 @@ CONDITIONS = [re.compile(pattern, re.IGNORECASE) for pattern in (
     r"\bруб(?:[.\s]|л\w*\b)|₽",
     r"\bпроцент\w*\b|%",
 )]
+QUALIFIED_CLAUSE = re.compile(
+    r"\b(?:на\s+(?:срок|период)(?!\s+(?:не\b|до\b|от\b))"
+    r"|не\s+(?:более|менее|больше|меньше|выше|ниже|ранее|позднее)"
+    r"|(?:только|лишь)\s+(?:при|если|для|после|до)"
+    r"|при\s+(?:условии|наличии|отсутствии)|в\s+(?:случае|течение)"
+    r"|с\s+момента|за\s+исключением|если|кроме|до|после)\b"
+    r"[^\n]+?(?=[.!?;](?:\s|$)|\n|\s+(?:но|однако)\s+|$)",
+    re.IGNORECASE,
+)
 MEETING_SUMMARY = re.compile(
     r"\b(?:перескажи|суммируй|подведи итог\w*|сделай [^.!?]{0,30}резюме)\b[^.!?]{0,75}\b(?:встреч|созвон|совещан)\w*\b"
 )
@@ -70,6 +80,11 @@ def verification_input(
         if not literals(text).issubset(literals(originals)):
             return [], []
         if any(pattern.search(text) and not pattern.search(originals) for pattern in CONDITIONS):
+            return [], []
+        # Every explicit limitation must remain visible next to a shortened claim.
+        # The verifier alone can accept a statement that is true but incomplete.
+        normalized = f" {index_text(text)} "
+        if any(f" {index_text(match[0])} " not in normalized for match in QUALIFIED_CLAUSE.finditer(originals)):
             return [], []
         covered.update(indices)
         safe_findings.append({"text": text, "refs": indices})

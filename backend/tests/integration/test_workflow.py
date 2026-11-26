@@ -124,7 +124,9 @@ def test_department_variants_complex_projects_and_glossary(settings, tmp_path):
     ("Внешнему подрядчику выдают гостевую лицензию на срок договора и не более 90 календарных дней.", True, True),
     ("Подрядчику выдают гостевую лицензию на 120 календарных дней.", True, False),
     ("Подрядчику выдают гостевую лицензию на 90 рабочих дней.", True, False),
-    ("Подрядчику выдают гостевую лицензию на 90 календарных дней.", False, True),
+    ("Гостевая лицензия подрядчика действует не более 90 календарных дней.", True, False),
+    ("Подрядчику выдают гостевую лицензию на срок договора.", True, False),
+    ("Штатному сотруднику выдают гостевую лицензию на срок договора и не более 90 календарных дней.", False, True),
 ])
 def test_findings_require_grounding_and_independent_verification(settings, tmp_path, statement, approve, checked):
     document = tmp_path / "license.md"
@@ -160,7 +162,7 @@ def test_findings_require_grounding_and_independent_verification(settings, tmp_p
         id = client.post("/api/v1/questions", json=request).json()["id"]
         result = wait_question(client, id)["result"]
         citation, = result["citations"]
-        assert "90 календарных дней" in citation["quote"]
+        assert "на срок договора" in citation["quote"] and "не более 90 календарных дней" in citation["quote"]
         assert result["usage"]["chat_calls"] == (3 if checked else 2)
         assert result["usage"]["prompt_tokens"] == (70 if checked else 50)
         assert result["findings"] == ([{"text": statement, "citation_ids": [citation["id"]]}] if approve and checked else [])
