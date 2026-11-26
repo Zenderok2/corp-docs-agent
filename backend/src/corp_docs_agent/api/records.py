@@ -127,6 +127,10 @@ def encode_question(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
             citations.append(encode_citation(citation, versions))
         result["citations"] = citations
         result.setdefault("departments", [])
+        result.setdefault("findings", [])
+        citation_ids = {citation["id"] for citation in citations}
+        if any(not citation_ids.issuperset(item["citation_ids"]) for item in result["departments"] + result["findings"]):
+            fail(409, "source_access_changed")
         result["practices"] = published_practices(conn, citations, row["role"])
         result["quality_answer"] = None
         if quality_id := result.pop("quality_answer_id"):

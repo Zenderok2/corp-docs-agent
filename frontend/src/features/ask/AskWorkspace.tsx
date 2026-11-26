@@ -11,6 +11,7 @@ import { SourceDialog } from '../sources/SourceDialog'
 import { PracticeDialog } from './PracticeDialog'
 
 const sampleQuestions = [
+  { label: 'Согласование плана проекта', question: 'В какой срок проджект-менеджер согласует план проекта?' },
   { label: 'Подписание договора', question: 'Кто подписывает агентский договор на 400 000 рублей и что проверяет инициатор?' },
   { label: 'Лицензия подрядчика', question: 'Какую лицензию выдают внешнему подрядчику и на какой срок?' },
   { label: 'Передача в службу качества', question: 'Как оформить гостевой пропуск в офис на выходные?' },
@@ -23,6 +24,7 @@ const outcomeLabels = {
   not_found: 'Ответ в регламентах не найден',
   conflict: 'В источниках есть противоречие',
   quality_answer: 'Ответ службы качества',
+  out_of_scope: 'Вопрос вне корпоративных документов',
 }
 
 const explanations: Record<string, string> = {
@@ -31,6 +33,7 @@ const explanations: Record<string, string> = {
   conflict: 'Доступные положения дают разные ответы. Для однозначного решения нужна проверка службы качества.',
   clarification_exhausted: 'После уточнений подтверждённого ответа всё ещё недостаточно.',
   no_evidence: 'В доступных источниках не нашлось пункта, который прямо отвечает на вопрос.',
+  out_of_scope: 'Агент ищет правила в корпоративных документах. За оперативными данными обратитесь к владельцу процесса.',
 }
 
 type Interaction = { id: string }
@@ -264,13 +267,23 @@ function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: 
   const positive = answer.outcome === 'answered' || answer.outcome === 'quality_answer'
   const groupedIds = new Set(answer.departments.flatMap((department) => department.citation_ids))
   const ungrouped = answer.citations.filter((citation) => !groupedIds.has(citation.id))
-  function quotes(citations: Citation[]) {
+  function evidenceLines(citations: Citation[]) {
     if (!citations.length) return null
-    return <ol className="answer-quotes">{citations.map((citation) => {
-      const number = answer.citations.indexOf(citation) + 1
-      return <li key={citation.id}><p>{citation.quote}</p><button type="button" className="inline-source"
-        onClick={() => openSource(citation.id)} aria-label={'Открыть источник ' + number}>{number}</button></li>
-    })}</ol>
+    const available = new Set(citations.map((citation) => citation.id))
+    const findings = answer.findings.filter((finding) => finding.citation_ids.every((id) => available.has(id)))
+    const summarized = new Set(findings.flatMap((finding) => finding.citation_ids))
+    const lines = [
+      ...findings,
+      ...citations.filter((citation) => !summarized.has(citation.id)).map((citation) => ({ text: citation.quote, citation_ids: [citation.id] })),
+    ]
+    return <ol className="answer-quotes">{lines.map(({ text, citation_ids }, index) => <li key={index}>
+      <p>{text}</p>
+      <span className="inline-sources">{citation_ids.map((id) => {
+        const number = answer.citations.findIndex((citation) => citation.id === id) + 1
+        return <button key={id} type="button" className="inline-source" onClick={() => openSource(id)}
+          aria-label={'Открыть источник ' + number}>{number}</button>
+      })}</span>
+    </li>)}</ol>
   }
   return <article className="answer-panel card">
     <div className="answer-heading">
@@ -279,14 +292,15 @@ function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: 
     </div>
     {explanations[answer.message_code] && <p className="answer-explanation">{explanations[answer.message_code]}</p>}
     {answer.corpus_changed && <p className="alert neutral">После ответа корпус обновился. Проверьте актуальность новым вопросом.</p>}
+    {answer.outcome === 'answered' && <p className="answer-explanation">{answer.findings.length ? 'Краткий ответ' : 'Выдержки из источников'}</p>}
     {answer.departments.length > 0 && <div className="department-answers">
       {answer.clarification?.field === 'department' && <p className="answer-explanation">Найдены возможные положения для разных подразделений.</p>}
       {answer.departments.map(({ name, citation_ids }) => <section key={name}>
         <h3>{name}</h3>
-        {quotes(answer.citations.filter((citation) => citation_ids.includes(citation.id))) ?? <p>Подтверждённые положения не найдены.</p>}
+        {evidenceLines(answer.citations.filter((citation) => citation_ids.includes(citation.id))) ?? <p>Подтверждённые положения не найдены.</p>}
       </section>)}
     </div>}
-    {quotes(ungrouped)}
+    {evidenceLines(ungrouped)}
     {answer.quality_case?.status === 'pending' && <p className="review-status"><ClipboardCheck size={17} /> Запрос отправлен службе качества. Копия в тестовой почте.</p>}
     {answer.quality_case?.mail && <MailThread mail={answer.quality_case.mail} />}
     {answer.quality_answer && <div className="knowledge-answer">

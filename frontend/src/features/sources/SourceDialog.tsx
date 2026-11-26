@@ -32,6 +32,7 @@ export function SourceDialog({ id, onClose }: { id: string; onClose: () => void 
         </div>
         <dl className="metadata-grid">
           <dt>Действует с</dt><dd>{source.effective_from ? formatDate(source.effective_from) : 'Дата не указана'}</dd>
+          {source.publication_confirmed_on && <><dt>Статус подтверждён</dt><dd>{formatDate(source.publication_confirmed_on)}</dd></>}
           {source.effective_to && <><dt>Действует по</dt><dd>{formatDate(source.effective_to)}</dd></>}
           {scopeFields.filter(({ key }) => source.scope[key]).map(({ key, label }) => (
             <div className="metadata-row" key={key}><dt>{label}</dt><dd>{source.scope[key]}</dd></div>

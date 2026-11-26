@@ -1,6 +1,8 @@
 """Check the synthetic corpus through a running HTTP service using its configured providers."""
 
 import argparse
+from email import policy
+from email.parser import BytesParser
 import json
 import os
 from pathlib import Path
@@ -12,6 +14,8 @@ import httpx
 
 CONTRACT = "Кто подписывает агентский договор на 400 000 рублей и что проверяет инициатор?"
 LICENSE = "Какую лицензию выдают внешнему подрядчику и на какой срок?"
+PROJECT = "В какой срок проджект-менеджер согласует план проекта?"
+PROJECT_MARKERS = {"Дирекция информационной безопасности": "две недели", "Инфраструктура": "три рабочих дня"}
 GAP = "Как оформить гостевой пропуск в офис на выходные?"
 DATE = "2026-11-26"
 
@@ -43,14 +47,18 @@ def assess(client, report, name, question, expected, required_versions=(), text_
         for citation in citations
     )
     outcome = result.get("outcome")
+    findings = result.get("findings", [])
+    ids = {citation["id"] for citation in citations}
+    grounded = all(finding["citation_ids"] and ids.issuperset(finding["citation_ids"]) for finding in findings)
     report[name] = {
-        "ok": outcome in expected and set(required_versions).issubset(versions) and verified
+        "ok": outcome in expected and set(required_versions).issubset(versions) and verified and grounded
         and all(marker in quote_text for marker in text_markers),
         "outcome": outcome,
         "error": result.get("error_code"),
         "sources": sorted(versions),
+        "findings": len(findings),
         "usage": result.get("usage", {}),
-        "search": result.get("trace", [{}])[0],
+        "search": next(iter(result.get("trace", [])), {}),
     }
 
 
@@ -75,6 +83,26 @@ def run(base_url: str, verify_quality: bool):
                ("проверяет приказ", "директору по продажам", "500 000"))
         licensed = wait(client, "/questions", {"question": LICENSE, "as_of": DATE})
         assess(client, report, "license", licensed, {"answered"}, ("demo-licensing@2026.1",), ("90 календарных дней",))
+        project = wait(client, "/questions", {"question": PROJECT, "as_of": DATE})
+        assess(client, report, "department_clarification", project, {"needs_clarification"})
+        if report["department_clarification"]["ok"]:
+            options = project["result"]["clarification"]["options"]
+            report["department_clarification"]["ok"] = set(options) == set(PROJECT_MARKERS)
+            both = wait(client, "/questions/" + project["id"] + "/follow-ups", {
+                "answer": "Комплексный проект", "context": {"departments": list(PROJECT_MARKERS)},
+            })
+            assess(client, report, "complex_project", both, {"answered"},
+                   ("demo-project-infrastructure@2026.1", "demo-project-security@2026.1"), tuple(PROJECT_MARKERS.values()))
+            result = both["result"]
+            quotes = {citation["id"]: citation["quote"] for citation in result.get("citations", [])}
+            groups = {group["name"]: group["citation_ids"] for group in result.get("departments", [])}
+            report["complex_project"]["ok"] &= all(
+                any(marker in quotes[key] for key in groups.get(department, []))
+                for department, marker in PROJECT_MARKERS.items()
+            )
+        out_of_scope = wait(client, "/questions", {"question": "Какой курс доллара сейчас?", "as_of": DATE})
+        assess(client, report, "out_of_scope", out_of_scope, {"out_of_scope"})
+        report["out_of_scope"]["ok"] &= not out_of_scope["result"].get("quality_case")
         gap = wait(client, "/questions", {"question": GAP, "as_of": DATE})
         expected_gap = {"not_found", "quality_answer"} if verify_quality else {"not_found"}
         assess(client, report, "gap", gap, expected_gap)
@@ -84,14 +112,25 @@ def run(base_url: str, verify_quality: bool):
                 report["quality_reuse"] = {"ok": True, "already_reviewed": True}
             else:
                 case = gap["result"]["quality_case"]
-                if not case:
+                if not case or not case["mail"]:
                     report["quality_reuse"] = {"ok": False, "error": "missing_case"}
                     return report
+                initial, = case["mail"]
+                download = client.get(f"/api/v1/quality/mail/{initial['id']}/eml")
+                download.raise_for_status()
+                request_mail = BytesParser(policy=policy.default).parsebytes(download.content)
+                report["quality_mail"] = {"ok": request_mail["To"] == "quality@corp-docs.test"
+                                          and request_mail["Cc"] == initial["cc"] and GAP in request_mail.get_content()}
                 call(client, "POST", "/session", json={"role": "quality", "code": os.environ["QUALITY_ACCESS_CODE"]})
-                call(client, "PUT", "/quality/cases/" + case["id"], json={
+                published = call(client, "PUT", "/quality/cases/" + case["id"], json={
                     "decision": "publish", "question": GAP,
                     "answer": "Демонстрационный ответ. Согласуйте гостевой пропуск с администратором офиса.",
+                    "in_reply_to": initial["id"],
                 })
+                reply = client.get(f"/api/v1/quality/mail/{published['mail_id']}/eml")
+                reply.raise_for_status()
+                reply_mail = BytesParser(policy=policy.default).parsebytes(reply.content)
+                report["quality_mail"]["ok"] &= reply_mail["In-Reply-To"] == request_mail["Message-ID"]
                 call(client, "DELETE", "/session")
                 reused = wait(client, "/questions", {"question": GAP, "as_of": DATE})
                 assess(client, report, "quality_reuse", reused, {"quality_answer"})

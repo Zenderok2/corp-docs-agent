@@ -32,6 +32,7 @@ export type SourceVersion = {
   publication_status: 'published' | 'unknown'
   effective_from: string | null
   effective_to: string | null
+  publication_confirmed_on: string | null
   scope: Scope
   kind: 'regulations' | 'product_licensing'
 }
@@ -47,7 +48,7 @@ export type Citation = SourceVersion & {
 }
 
 export type Status = 'queued' | 'running' | 'completed' | 'failed'
-export type Outcome = 'answered' | 'partial' | 'needs_clarification' | 'not_found' | 'conflict' | 'quality_answer'
+export type Outcome = 'answered' | 'partial' | 'needs_clarification' | 'not_found' | 'conflict' | 'quality_answer' | 'out_of_scope'
 
 export type Practice = {
   id: string
@@ -77,6 +78,7 @@ export type Answer = {
   as_of: string
   citations: Citation[]
   departments: Array<{ name: string; citation_ids: string[] }>
+  findings: Array<{ text: string; citation_ids: string[] }>
   corpus_changed: boolean
   clarification: { question: string; field: ScopeKey | null; options: string[] } | null
   quality_case: { id: string; status: CaseStatus; mail: QualityMail[] } | null
@@ -91,6 +93,7 @@ export type Answer = {
     vector_state?: string | null
     duration_ms?: number
     verified_citations?: number
+    verified_findings?: number
   }>
   usage: {
     latency_ms: number

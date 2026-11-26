@@ -6,6 +6,7 @@ from threading import Event
 from time import monotonic
 from uuid import uuid4
 
+from corp_docs_agent.agent.grounding import concise_excerpts, outside_document_qa, verification_input
 from corp_docs_agent.persistence.quality_mail import send_request
 from corp_docs_agent.persistence.store import Store, corpus_revision, json_dump, now, visible_versions
 from corp_docs_agent.providers.llama import Chat, Decision, ProviderError
@@ -13,11 +14,12 @@ from corp_docs_agent.retrieval.search import (
     Candidate, amount_applies, eligible_versions, expand_evidence, lexical_ids, load_candidates, mentioned_departments, rank_ids,
     search_terms, select_evidence, topic_supported,
 )
-from corp_docs_agent.retrieval.terms import canonical_question, scope_key
+from corp_docs_agent.retrieval.terms import canonical_question, glossary_hints, scope_key
 
 
 logger = logging.getLogger(__name__)
 MAX_FOLLOW_UPS = 2
+SUMMARY_BUDGET_SECONDS = 60.0
 SCOPE_QUESTIONS = {
     "legal_entity": "О каком юридическом лице идёт речь?",
     "department": "О каком подразделении идёт речь?",
@@ -30,6 +32,17 @@ def elapsed_ms(started: float) -> int:
     return round((monotonic() - started) * 1000)
 
 
+def add_chat_usage(usage: dict, call_usage: dict) -> None:
+    usage["chat_calls"] += 1
+    if "chat_model" in call_usage:
+        usage["chat_model"] = call_usage["chat_model"]
+    if not {"prompt_tokens", "completion_tokens"}.issubset(call_usage):
+        usage["unmetered_chat_calls"] = usage.get("unmetered_chat_calls", 0) + 1
+    for key in ("prompt_tokens", "completion_tokens"):
+        if key in call_usage:
+            usage[key] = usage.get(key, 0) + call_usage[key]
+
+
 def locate_evidence(decision: Decision, sources: list[Candidate]) -> list[tuple[Candidate, int, int]]:
     located = []
     for ref in dict.fromkeys(decision.evidence):
@@ -40,16 +53,18 @@ def locate_evidence(decision: Decision, sources: list[Candidate]) -> list[tuple[
     return located
 
 
-def department_passages(question: str, candidates: list[Candidate], semantic_support: set[str]) -> dict[str, list[Candidate]]:
+def scope_passages(field: str, question: str, candidates: list[Candidate], semantic_support: set[str]) -> dict[str, list[Candidate]]:
     options: dict[str, list[Candidate]] = {}
     for item in candidates:
-        if department := item.missing_scope.get("department"):
-            if set(item.missing_scope) == {"department"}:
-                options.setdefault(department, []).append(item)
-    return {
-        department: [item for item in items if topic_supported(question, [item.text], semantic_match=item.id in semantic_support)][:2]
-        for department, items in options.items()
-    }
+        if set(item.missing_scope) != {field} or not topic_supported(
+            question, [item.text], semantic_match=item.id in semantic_support,
+        ):
+            continue
+        label = item.missing_scope[field]
+        variant = options.setdefault(label, [])
+        if len(variant) < 2 and all(previous.block_id != item.block_id for previous in variant):
+            variant.append(item)
+    return options
 
 
 def decide_scope(evidence: list, candidates: list[Candidate], context: dict) -> tuple[str | None, list[str]]:
@@ -135,6 +150,12 @@ class AnswerWorker:
         with self.store.connect() as conn:
             visible = visible_versions(conn, question["role"])
             revision = corpus_revision(conn)
+            if outside_document_qa(question["question"]):
+                return {
+                    "outcome": "out_of_scope", "message_code": "out_of_scope", "as_of": question["as_of"],
+                    "corpus_revision": revision, "clarification": None, "trace": [],
+                    "usage": {"chat_calls": 0, "embedding_calls": 0}, "department_refs": {}, "finding_refs": [],
+                }, []
             if not context.get("department") and not context.get("departments"):
                 available, _ = eligible_versions(visible, as_of, context, document_ids)
                 labels = {version.metadata["scope"]["department"] for version in available.values()
@@ -192,45 +213,55 @@ class AnswerWorker:
         message_code = "no_evidence" if visible else "empty_corpus"
         evidence: list = []
         clarification: dict | None = None
-        variants = {
-            department: items for department, items in department_passages(question["question"], primary, semantic_support).items()
-            if items
-        }
+        field, variants = None, {}
+        for name in ("legal_entity", "department"):
+            topical = scope_passages(name, question["question"], primary, semantic_support)
+            if len(topical) > 1:
+                field, variants = name, topical
+                break
         department_refs = {}
-        if len(variants) > 1:
+        if field:
             options = sorted(variants)
-            for department in options:
-                items = variants[department]
-                department_refs[department] = list(range(len(evidence), len(evidence) + len(items)))
+            for option in options:
+                items = variants[option]
+                if field == "department":
+                    department_refs[option] = list(range(len(evidence), len(evidence) + len(items)))
                 evidence.extend((item, item.start, item.start + len(item.text)) for item in items)
             outcome = "needs_clarification"
-            clarification = {"question": SCOPE_QUESTIONS["department"], "field": "department", "options": options}
+            clarification = {"question": SCOPE_QUESTIONS[field], "field": field, "options": options}
         elif candidates and topic_supported(
             question["question"], [item.text for item in candidates],
             semantic_match=any(item.id in semantic_support for item in candidates),
         ):
             model_started = monotonic()
-            decision, chat_usage = self.chat.decide({
+            assessment = {
                 "question": question["question"],
                 "clarification_answers": turns,
                 "as_of": question["as_of"],
+                "glossary": glossary_hints(combined),
                 "context": context,
                 "sources": [
                     {
                         "ref": number, "title": item.version.metadata["title"],
-                        "version": item.version.metadata["version"], "status": item.version.metadata["status"],
+                        "version": item.version.metadata["version"], "status": item.version.publication_status_on(as_of),
                         "missing_scope": item.missing_scope, "text": item.text,
                         "scope": {field: value for field, value in item.version.metadata["scope"].items() if value},
-                        "applies_to_departments": [dept for dept, subset in department_versions.items() if item.version.id in subset],
                     }
                     for number, item in enumerate(candidates, 1)
                 ],
-            })
-            usage.update(chat_usage)
+            }
+            if department_versions:
+                outcome, evidence, clarifier, department_refs = self.assess_departments(
+                    assessment, candidates, department_versions, semantic_support, usage,
+                    started + getattr(self.chat, "timeout", 90.0),
+                )
+            else:
+                decision, chat_usage = self.chat.decide(assessment)
+                add_chat_usage(usage, chat_usage)
+                outcome, clarifier = decision.outcome, decision.clarification
+                if outcome != "not_found":
+                    evidence = locate_evidence(decision, candidates)
             trace.append({"step": "assessment", "duration_ms": elapsed_ms(model_started)})
-            outcome = decision.outcome
-            if outcome != "not_found":
-                evidence = locate_evidence(decision, candidates)
             if outcome == "answered" and not topic_supported(
                 question["question"],
                 [source.text for source, _, _ in evidence],
@@ -246,39 +277,136 @@ class AnswerWorker:
                 clarification = {"question": SCOPE_QUESTIONS[field], "field": field, "options": options}
                 outcome = "needs_clarification"
             elif outcome == "needs_clarification":
-                clarifier = " ".join(decision.clarification.split())
-                if clarifier and clarifier.endswith("?"):
+                clarifier = " ".join(clarifier.split())
+                if clarifier.endswith("?"):
                     clarification = {"question": clarifier, "field": None, "options": []}
                 else:
                     outcome = "partial" if evidence else "not_found"
-            if department_versions:
-                for department, subset in department_versions.items():
-                    refs = [index for index, (source, _, _) in enumerate(evidence) if source.version.id in subset]
-                    scoped = [index for index in refs if evidence[index][0].version.metadata["scope"].get("department")]
-                    department_refs[department] = refs
-                    if outcome == "answered" and (
-                        not topic_supported(question["question"], [evidence[index][0].text for index in refs],
-                                            semantic_match=any(evidence[index][0].id in semantic_support for index in refs))
-                        or (not scoped and scope_key(department) in first_by_department)
-                    ):
-                        outcome = "partial"
         if department_versions and not department_refs:
             department_refs = {department: [] for department in department_versions}
         if outcome == "needs_clarification" and len(turns) >= MAX_FOLLOW_UPS:
             outcome = "partial" if evidence else "not_found"
             clarification = None
             message_code = "clarification_exhausted"
-        elif outcome == "answered" and any(source.version.metadata["status"] != "published" for source, _, _ in evidence):
+        elif outcome in {"answered", "partial"} and any(
+            source.version.publication_status_on(as_of) != "published" for source, _, _ in evidence
+        ):
             outcome = "partial"
             message_code = "unknown_publication"
         elif outcome != "not_found":
             message_code = outcome
-        trace.append({"step": "verification", "verified_citations": len(evidence)})
+        findings = []
+        verification_started = monotonic()
+        if message_code in {"answered", "partial", "conflict"}:
+            findings = concise_excerpts(evidence)
+            if evidence and not findings:
+                deadline = started + min(getattr(self.chat, "timeout", 90.0), SUMMARY_BUDGET_SECONDS)
+                findings = self.summarize(question["question"], evidence, department_refs, usage, deadline)
+        trace.append({
+            "step": "verification", "verified_citations": len(evidence), "verified_findings": len(findings),
+            "duration_ms": elapsed_ms(verification_started),
+        })
         return {
             "outcome": outcome, "message_code": message_code, "as_of": question["as_of"],
             "corpus_revision": revision, "clarification": clarification, "trace": trace, "usage": usage,
             "department_refs": department_refs,
+            "finding_refs": findings,
         }, evidence
+
+    def assess_departments(
+        self, assessment: dict, candidates: list[Candidate], department_versions: dict,
+        semantic_support: set[str], usage: dict, deadline: float,
+    ) -> tuple[str, list, str, dict[str, list[int]]]:
+        outcomes = []
+        evidence = []
+        citation_positions = {}
+        groups = {department: [] for department in department_versions}
+        clarifier = ""
+        failure = None
+        for number, (department, versions) in enumerate(department_versions.items()):
+            scope_matches = [
+                (item, source) for item, source in zip(candidates, assessment["sources"], strict=True)
+                if item.version.id in versions
+            ][:5]
+            if not topic_supported(
+                assessment["question"], [item.text for item, _ in scope_matches],
+                semantic_match=any(item.id in semantic_support for item, _ in scope_matches),
+            ):
+                outcomes.append("not_found")
+                continue
+            remaining = deadline - monotonic()
+            if remaining < 3:
+                failure = ProviderError("model_timeout")
+                break
+            context = {key: value for key, value in assessment["context"].items() if value and key != "departments"}
+            context["department"] = department
+            try:
+                decision, call_usage = self.chat.decide({
+                    **assessment, "context": context, "focus_department": department,
+                    "sources": [{**source, "ref": ref} for ref, (_, source) in enumerate(scope_matches, 1)],
+                }, timeout=remaining / (len(department_versions) - number))
+                selected = ([] if decision.outcome == "not_found"
+                            else locate_evidence(decision, [item for item, _ in scope_matches]))
+            except ProviderError as error:
+                add_chat_usage(usage, {})
+                failure = error
+                outcomes.append("not_found")
+                continue
+            add_chat_usage(usage, call_usage)
+            outcome = decision.outcome
+            if outcome == "answered" and not topic_supported(
+                assessment["question"], [item.text for item, _, _ in selected],
+                semantic_match=any(item.id in semantic_support for item, _, _ in selected),
+            ):
+                outcome, selected = "not_found", []
+            if outcome == "conflict" and len({item.block_id for item, _, _ in selected}) < 2:
+                outcome = "partial"
+            outcomes.append(outcome)
+            if outcome == "needs_clarification" and decision.clarification.endswith("?") and not clarifier:
+                clarifier = decision.clarification
+            for item, start, end in selected:
+                if item.id not in citation_positions:
+                    citation_positions[item.id] = len(evidence)
+                    evidence.append((item, start, end))
+                groups[department].append(citation_positions[item.id])
+        if failure and not evidence:
+            raise failure
+        if clarifier:
+            outcome = "needs_clarification"
+        elif "conflict" in outcomes:
+            outcome = "conflict"
+        elif not failure and all(outcome == "answered" for outcome in outcomes):
+            outcome = "answered"
+        else:
+            outcome = "partial" if evidence else "not_found"
+        return outcome, evidence, clarifier, groups
+
+    def summarize(self, question: str, evidence: list, scopes: dict, usage: dict, deadline: float) -> list[dict]:
+        remaining = deadline - monotonic()
+        if remaining < 10 or not hasattr(self.chat, "summarize"):
+            return []
+        sources = [source for source, _, _ in evidence]
+        try:
+            draft, draft_usage = self.chat.summarize(question, [
+                {"ref": ref, "quote": item.text, "scope": item.version.metadata["scope"],
+                 "departments": [name for name, refs in scopes.items() if ref - 1 in refs]}
+                for ref, item in enumerate(sources, 1)
+            ], min(16, remaining - 4))
+        except ProviderError:
+            add_chat_usage(usage, {})
+            return []
+        add_chat_usage(usage, draft_usage)
+        proposals, checks = verification_input(draft.findings, sources, evidence, scopes)
+        remaining = deadline - monotonic()
+        if not proposals or remaining < 2:
+            return []
+        try:
+            verified, verify_usage = self.chat.verify(checks, min(12, remaining))
+        except ProviderError:
+            add_chat_usage(usage, {})
+            return []
+        add_chat_usage(usage, verify_usage)
+        return proposals if set(verified.supported) == {item["id"] for item in checks} else []
 
     def publish(self, question: sqlite3.Row, result: dict, evidence: list, started: float) -> None:
         with self.store.connect(write=True) as conn:
@@ -308,6 +436,10 @@ class AnswerWorker:
             result["departments"] = [
                 {"name": department, "citation_ids": [citation_ids[index] for index in refs]}
                 for department, refs in result.pop("department_refs").items()
+            ]
+            result["findings"] = [
+                {"text": finding["text"], "citation_ids": [citation_ids[index] for index in finding["refs"]]}
+                for finding in result.pop("finding_refs")
             ]
             result["quality_case_id"] = None
             result["quality_answer_id"] = None

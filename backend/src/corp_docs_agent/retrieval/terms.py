@@ -101,3 +101,8 @@ def scope_key(text: str) -> str:
     tokens = stems(words(text))
     alias = ALIASES.get(tuple(tokens))
     return alias if alias in {"диб", "уиб"} else " ".join(words(text))
+
+
+def glossary_hints(text: str) -> list[str]:
+    used = set(concepts(text))
+    return [" = ".join((key.upper(), *phrases)) for key, phrases in GLOSSARY.items() if stems([key])[0] in used]

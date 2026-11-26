@@ -194,6 +194,7 @@ textarea:not(.composer > textarea) { resize: vertical; }
 .answer-quotes { display: grid; margin: 0; list-style: none; padding: 0; gap: 13px; }
 .answer-quotes li { display: flex; gap: 8px; align-items: flex-start; line-height: 1.65; font-size: .94rem; }
 .answer-quotes p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.inline-sources { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .inline-source { cursor: pointer; width: 23px; height: 23px; margin-top: 1px; }
 .inline-source:hover { background: #c4e6d6; }
 .review-status { display: flex; gap: 8px; align-items: center; color: #276250; font-size: .88rem; border-top: 1px solid var(--line); padding-top: 13px; }

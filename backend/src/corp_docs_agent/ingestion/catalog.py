@@ -35,7 +35,8 @@ def import_entry(settings: Settings, store: Store, root: Path, entry: SourceEntr
     if len(content) > limit:
         raise ImportFailure("file_too_large")
     checksum = sha256(content).hexdigest()
-    metadata = json_dump(entry.model_dump(mode="json", exclude={"path"}))
+    excluded = {"path", "publication_confirmed_on"} if entry.publication_confirmed_on is None else {"path"}
+    metadata = json_dump(entry.model_dump(mode="json", exclude=excluded))
     with store.connect() as conn:
         existing = conn.execute("SELECT * FROM document_versions WHERE id = ?", (reference,)).fetchone()
     if existing and checksum != existing["sha256"]:

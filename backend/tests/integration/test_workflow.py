@@ -13,7 +13,7 @@ from corp_docs_agent.api.main import create_app
 from corp_docs_agent.core.settings import Settings
 from corp_docs_agent.ingestion.catalog import import_catalog
 from corp_docs_agent.persistence.store import Store, visible_versions
-from corp_docs_agent.providers.llama import Decision
+from corp_docs_agent.providers.llama import Decision, Finding, Findings, Verification
 from corp_docs_agent.retrieval.search import eligible_versions, lexical_ids
 from corp_docs_agent.retrieval.terms import query_terms
 
@@ -21,6 +21,7 @@ from corp_docs_agent.retrieval.terms import query_terms
 SAMPLES = Path(__file__).resolve().parents[3] / "data" / "samples" / "catalog.json"
 CONTRACT_QUESTION = "Кто подписывает агентский договор на 400 000 рублей и что проверяет инициатор?"
 GAP_QUESTION = "Как оформить гостевой пропуск в офис на выходные?"
+LICENSE_QUESTION = "Какую лицензию выдают внешнему подрядчику и на какой срок?"
 
 
 class ScriptedChat:
@@ -42,7 +43,7 @@ class ScriptedChat:
 def settings(tmp_path):
     settings = Settings(tmp_path, tmp_path / "app.sqlite3", staff_code="staff-test", quality_code="quality-test")
     report = import_catalog(settings, SAMPLES)
-    assert len(report) == 4 and all(item["status"] == "imported" for item in report)
+    assert len(report) == 6 and all(item["status"] == "imported" for item in report)
     return settings
 
 
@@ -59,26 +60,20 @@ def wait_question(client, id):
 
 
 def test_department_variants_complex_projects_and_glossary(settings, tmp_path):
-    sources = []
-    for key, department, sentence, group in [
-        ("infra", "Инфраструктура", "РП согласует план проекта за три рабочих дня.", "demo"),
-        ("security", "Дирекция информационной безопасности", "Руководитель проекта согласует план проекта за две недели.", "demo"),
-        ("private", "Другой центр", "РП согласует план проекта за пять рабочих дней.", "staff"),
-    ]:
-        file = tmp_path / (key + ".md")
-        file.write_text(sentence, encoding="utf-8")
-        sources.append({
-            "path": file.name, "key": key, "version": "test", "title": department,
-            "kind": "regulations", "status": "published", "scope": {"department": department}, "groups": [group],
-        })
+    restricted = tmp_path / "private.md"
+    restricted.write_text("РП согласует план проекта за пять рабочих дней.", encoding="utf-8")
     manifest = tmp_path / "project-catalog.json"
-    manifest.write_text(json.dumps({"sources": sources}), encoding="utf-8")
-    assert len(import_catalog(settings, manifest)) == 3
+    manifest.write_text(json.dumps({"sources": [{
+        "path": restricted.name, "key": "private", "version": "test", "title": "Другой центр",
+        "kind": "regulations", "status": "published", "scope": {"department": "Другой центр"}, "groups": ["staff"],
+    }]}), encoding="utf-8")
+    assert import_catalog(settings, manifest)[0]["status"] == "imported"
 
     class ProjectChat(ScriptedChat):
-        def decide(self, data):
+        def decide(self, data, *, timeout=None):
             selected = [source["ref"] for source in data["sources"] if "согласует план проекта" in source["text"]]
-            assert all(len(source["applies_to_departments"]) <= 1 for source in data["sources"] if source["scope"])
+            assert isinstance(timeout, float) and data["focus_department"] == data["context"]["department"]
+            assert len({source["scope"]["department"] for source in data["sources"] if source["scope"]}) == 1
             return Decision(outcome="answered", evidence=selected, clarification=""), {"chat_calls": 1}
 
     question = "В какой срок проджект-менеджер согласует план проекта?"
@@ -103,6 +98,16 @@ def test_department_variants_complex_projects_and_glossary(settings, tmp_path):
         assert result["outcome"] == "answered"
         assert len(result["departments"]) == 2
         assert len({citation_id for group in result["departments"] for citation_id in group["citation_ids"]}) == 2
+        assert len(result["findings"]) == 2
+
+        unsupported = client.post("/api/v1/questions", json={
+            "question": question, "context": {"departments": ["Инфраструктура", "Отдел снабжения"]},
+        }).json()["id"]
+        limited = wait_question(client, unsupported)["result"]
+        assert limited["outcome"] == "partial"
+        assert {item["name"]: len(item["citation_ids"]) for item in limited["departments"]} == {
+            "Инфраструктура": 1, "Отдел снабжения": 0,
+        }
 
         unknown = first
         for outcome in ["needs_clarification", "partial"]:
@@ -115,9 +120,73 @@ def test_department_variants_complex_projects_and_glossary(settings, tmp_path):
         assert unresolved["quality_case"]["status"] == "pending"
 
 
+@pytest.mark.parametrize(("statement", "approve", "checked"), [
+    ("Внешнему подрядчику выдают гостевую лицензию на срок договора и не более 90 календарных дней.", True, True),
+    ("Подрядчику выдают гостевую лицензию на 120 календарных дней.", True, False),
+    ("Подрядчику выдают гостевую лицензию на 90 рабочих дней.", True, False),
+    ("Подрядчику выдают гостевую лицензию на 90 календарных дней.", False, True),
+])
+def test_findings_require_grounding_and_independent_verification(settings, tmp_path, statement, approve, checked):
+    document = tmp_path / "license.md"
+    document.write_text(
+        "3.2. Внешнему подрядчику выдают гостевую лицензию «Орбита Про» на срок договора, но на срок "
+        "не более 90 календарных дней. Владелец договора отправляет заявку на выдачу гостевой лицензии "
+        "администратору системы и указывает дату окончания работ подрядчика.", encoding="utf-8",
+    )
+    manifest = tmp_path / "license-catalog.json"
+    manifest.write_text(json.dumps({"sources": [{
+        "path": document.name, "key": "long-test-license", "version": "test", "title": "Тестовая лицензия",
+        "kind": "product_licensing", "status": "published", "publication_confirmed_on": "2026-11-26", "groups": ["demo"],
+    }]}), encoding="utf-8")
+    assert import_catalog(settings, manifest)[0]["status"] == "imported"
+
+    class LicenseChat(ScriptedChat):
+        def decide(self, data):
+            ref = next(item["ref"] for item in data["sources"] if item["text"].startswith("3.2."))
+            return Decision(outcome="answered", evidence=[ref], clarification=""), {"chat_calls": 1, "prompt_tokens": 40}
+
+        def summarize(self, question, citations, timeout):
+            assert question == LICENSE_QUESTION and len(citations) == 1
+            return Findings(findings=[Finding(text=statement, refs=[1])]), {"prompt_tokens": 10}
+
+        def verify(self, findings, timeout):
+            assert len(findings) == 1 and findings[0]["text"] == statement
+            assert "срок договора" in findings[0]["citations"][0]["quote"]
+            return Verification(supported=[1] if approve else []), {"prompt_tokens": 20}
+
+    with TestClient(create_app(settings, LicenseChat())) as client:
+        client.get("/api/v1/session")
+        request = {"question": LICENSE_QUESTION, "document_ids": ["long-test-license"], "as_of": "2026-11-26"}
+        id = client.post("/api/v1/questions", json=request).json()["id"]
+        result = wait_question(client, id)["result"]
+        citation, = result["citations"]
+        assert "90 календарных дней" in citation["quote"]
+        assert result["usage"]["chat_calls"] == (3 if checked else 2)
+        assert result["usage"]["prompt_tokens"] == (70 if checked else 50)
+        assert result["findings"] == ([{"text": statement, "citation_ids": [citation["id"]]}] if approve and checked else [])
+        assert citation["effective_from"] is None and citation["publication_confirmed_on"] == "2026-11-26"
+        if approve and checked:
+            previous = client.post("/api/v1/questions", json={**request, "as_of": "2026-11-25"}).json()["id"]
+            earlier = wait_question(client, previous)["result"]
+            assert earlier["outcome"] == "partial" and earlier["message_code"] == "unknown_publication"
+            assert earlier["findings"] == []
+
+
+def test_clear_out_of_scope_requests_do_not_escalate(settings):
+    with TestClient(create_app(settings, ScriptedChat())) as client:
+        client.get("/api/v1/session")
+        for outside in ("Какой курс доллара сейчас?", "Какая премия за мою сделку?", "Сделай краткое резюме созвона."):
+            id = client.post("/api/v1/questions", json={"question": outside}).json()["id"]
+            result = wait_question(client, id)["result"]
+            assert result["outcome"] == "out_of_scope"
+            assert result["quality_case"] is None and result["usage"]["chat_calls"] == 0
+        id = client.post("/api/v1/questions", json={"question": "Как рассчитать премию за сделку по регламенту?"}).json()["id"]
+        assert wait_question(client, id)["result"]["outcome"] == "not_found"
+
+
 def test_dialog_citations_and_practice_survive_restart(settings):
     with TestClient(create_app(settings, ScriptedChat())) as client:
-        assert client.get("/api/v1/session").json()["visible_versions"] == 4
+        assert client.get("/api/v1/session").json()["visible_versions"] == 6
         request = {"question": CONTRACT_QUESTION, "as_of": "2026-11-26"}
         response = client.post("/api/v1/questions", json=request, headers={"Idempotency-Key": "first-turn"})
         assert response.status_code == 202

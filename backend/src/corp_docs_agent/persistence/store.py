@@ -158,6 +158,12 @@ class CorpusVersion:
         end = self.metadata["effective_to"]
         return (start is None or start <= day) and (end is None or end >= day)
 
+    def publication_status_on(self, as_of: date) -> str:
+        confirmed = self.metadata.get("publication_confirmed_on")
+        if confirmed and not self.metadata["effective_from"] and as_of.isoformat() < confirmed:
+            return "unknown"
+        return self.metadata["status"]
+
     def summary(self) -> dict:
         return {
             "id": self.id,
@@ -168,6 +174,7 @@ class CorpusVersion:
             "publication_status": self.metadata["status"],
             "effective_from": self.metadata["effective_from"],
             "effective_to": self.metadata["effective_to"],
+            "publication_confirmed_on": self.metadata.get("publication_confirmed_on"),
             "scope": self.metadata["scope"],
         }
 

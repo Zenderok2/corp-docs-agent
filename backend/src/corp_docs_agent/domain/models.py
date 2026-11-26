@@ -92,6 +92,7 @@ class SourceEntry(StrictModel):
     status: Literal["published", "unknown", "withdrawn"] = "unknown"
     effective_from: date | None = None
     effective_to: date | None = None
+    publication_confirmed_on: date | None = None
     scope: Context = Field(default_factory=Context)
     groups: list[AccessGroup] = Field(default_factory=lambda: ["staff"], min_length=1, max_length=3)
     supersedes: list[VersionRef] = Field(default_factory=list, max_length=20)
@@ -101,6 +102,12 @@ class SourceEntry(StrictModel):
     def validate_version(self) -> "SourceEntry":
         if self.effective_from and self.effective_to and self.effective_from > self.effective_to:
             raise ValueError("The version end date is earlier than its start date")
+        if self.publication_confirmed_on:
+            if self.status != "published":
+                raise ValueError("Current publication confirmation requires published status")
+            if ((self.effective_from and self.publication_confirmed_on < self.effective_from)
+                    or (self.effective_to and self.publication_confirmed_on > self.effective_to)):
+                raise ValueError("Publication confirmation is outside the effective dates")
         reference = f"{self.key}@{self.version}"
         if reference in self.supersedes or reference in self.related_to:
             raise ValueError("A version cannot refer to itself")
