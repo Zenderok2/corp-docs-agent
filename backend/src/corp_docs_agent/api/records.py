@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from corp_docs_agent.api.auth import Principal
 from corp_docs_agent.core.settings import Settings
+from corp_docs_agent.persistence.quality_mail import mail_thread
 from corp_docs_agent.persistence.store import corpus_revision, json_dump, now, visible_versions
 
 
@@ -138,9 +139,9 @@ def encode_question(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
                 fail(409, "source_access_changed")
             result["quality_answer"] = dict(quality)
         if case_id := result.pop("quality_case_id"):
-            case = conn.execute("SELECT id, status FROM quality_cases WHERE id = ?", (case_id,)).fetchone()
-            result["quality_case"] = dict(case)
-            if case["status"] == "published" and result["quality_answer"] is None:
+            case = conn.execute("SELECT id, status, question_id FROM quality_cases WHERE id = ?", (case_id,)).fetchone()
+            result["quality_case"] = {"id": case["id"], "status": case["status"], "mail": mail_thread(conn, case_id)}
+            if case["status"] == "published" and case["question_id"] == row["id"] and result["quality_answer"] is None:
                 quality = conn.execute(
                     "SELECT id, canonical_question AS question, answer, reviewed_at FROM quality_cases WHERE id = ?",
                     (case_id,),

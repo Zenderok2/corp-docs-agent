@@ -6,6 +6,7 @@ from threading import Event
 from time import monotonic
 from uuid import uuid4
 
+from corp_docs_agent.persistence.quality_mail import send_request
 from corp_docs_agent.persistence.store import Store, corpus_revision, json_dump, now, visible_versions
 from corp_docs_agent.providers.llama import Chat, Decision, ProviderError
 from corp_docs_agent.retrieval.search import (
@@ -321,13 +322,15 @@ class AnswerWorker:
                     conn.execute(
                         """INSERT INTO quality_cases(id, root_id, question_id, status, created_at)
                         VALUES (?, ?, ?, 'pending', ?)
-                        ON CONFLICT(root_id) DO UPDATE SET question_id = excluded.question_id
-                        WHERE quality_cases.status = 'pending'""",
+                        ON CONFLICT(root_id) DO NOTHING""",
                         (case_id, question["root_id"], question["id"], now()),
                     )
-                    result["quality_case_id"] = conn.execute(
-                        "SELECT id FROM quality_cases WHERE root_id = ?", (question["root_id"],),
-                    ).fetchone()[0]
+                    case = conn.execute(
+                        "SELECT id, status, question_id FROM quality_cases WHERE root_id = ?", (question["root_id"],),
+                    ).fetchone()
+                    if case["question_id"] == question["id"] and case["status"] == "pending":
+                        send_request(conn, case["id"], question["root_id"], question["question"], result["message_code"])
+                    result["quality_case_id"] = case["id"]
             result["usage"]["latency_ms"] = elapsed_ms(started)
             conn.execute(
                 "UPDATE questions SET status = 'completed', result = ? WHERE id = ?",

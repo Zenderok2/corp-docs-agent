@@ -112,7 +112,26 @@ CREATE TABLE IF NOT EXISTS index_generations (
     created_at TEXT NOT NULL
 );
 INSERT OR IGNORE INTO app_meta VALUES ('corpus_revision', '0');
-PRAGMA user_version = 1;
+"""
+
+MAIL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS quality_mail (
+    id TEXT PRIMARY KEY,
+    case_id TEXT NOT NULL REFERENCES quality_cases(id),
+    in_reply_to TEXT REFERENCES quality_mail(id),
+    direction TEXT NOT NULL CHECK (direction IN ('request', 'reply')),
+    sender TEXT NOT NULL,
+    recipient TEXT NOT NULL,
+    cc TEXT,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    sent_at TEXT NOT NULL,
+    CHECK ((direction = 'request' AND in_reply_to IS NULL AND cc IS NOT NULL)
+        OR (direction = 'reply' AND in_reply_to IS NOT NULL AND cc IS NULL))
+);
+CREATE INDEX IF NOT EXISTS quality_mail_case ON quality_mail(case_id);
+CREATE UNIQUE INDEX IF NOT EXISTS quality_mail_request ON quality_mail(case_id) WHERE direction = 'request';
+PRAGMA user_version = 2;
 """
 
 
@@ -214,9 +233,10 @@ class Store:
         try:
             conn.execute("PRAGMA journal_mode = WAL")
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version == 0:
-                conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA + "\nCOMMIT;")
-            elif version != 1:
+            if version in {0, 1}:
+                migration = (SCHEMA if version == 0 else "") + MAIL_SCHEMA
+                conn.executescript("BEGIN IMMEDIATE;\n" + migration + "\nCOMMIT;")
+            elif version != 2:
                 raise RuntimeError("Unsupported database schema")
         finally:
             conn.close()

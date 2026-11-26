@@ -59,6 +59,18 @@ export type Practice = {
 
 export type CaseStatus = 'pending' | 'published' | 'dismissed' | 'withdrawn'
 
+export type QualityMail = {
+  id: string
+  in_reply_to: string | null
+  direction: 'request' | 'reply'
+  sender: string
+  recipient: string
+  cc: string | null
+  subject: string
+  body: string
+  sent_at: string
+}
+
 export type Answer = {
   outcome: Outcome
   message_code: string
@@ -67,7 +79,7 @@ export type Answer = {
   departments: Array<{ name: string; citation_ids: string[] }>
   corpus_changed: boolean
   clarification: { question: string; field: ScopeKey | null; options: string[] } | null
-  quality_case: { id: string; status: CaseStatus } | null
+  quality_case: { id: string; status: CaseStatus; mail: QualityMail[] } | null
   quality_answer: { id: string; question: string; answer: string; reviewed_at: string } | null
   practices: Practice[]
   trace: Array<{
@@ -109,12 +121,15 @@ export type QualityCase = {
   question: string
   canonical_question: string | null
   answer: string | null
+  effective_to: string | null
+  aliases: string[]
   reason: string
   as_of: string
   turns: string[]
   context: QuestionContext
   role: Role
   citations: Citation[]
+  mail: QualityMail[]
 }
 
 export type PracticeQueueItem = {
@@ -132,6 +147,7 @@ const problem: Record<string, string> = {
   invalid_request: 'Проверьте обязательные поля и длину текста.',
   session_required: 'Сеанс завершился. Обновите страницу.',
   invalid_access_code: 'Код доступа не подошёл.',
+  mail_thread_changed: 'В цепочке появилось новое письмо. Обновите страницу перед ответом.',
   login_throttled: 'Слишком много попыток. Повторите через минуту.',
   empty_corpus: 'В этом сеансе нет доступных документов.',
   queue_full: 'Агент уже обрабатывает несколько вопросов. Повторите чуть позже.',

@@ -18,6 +18,7 @@ from corp_docs_agent.api.records import (
 )
 from corp_docs_agent.core.settings import Settings
 from corp_docs_agent.domain.models import Ask, CaseReview, FollowUp, Login, PracticeReport, PracticeReview
+from corp_docs_agent.persistence.quality_mail import as_eml, mail_thread, recover_pending_mail, send_reply
 from corp_docs_agent.persistence.store import Store, json_dump, now, visible_versions
 from corp_docs_agent.providers.llama import Chat
 from corp_docs_agent.retrieval.terms import canonical_question
@@ -44,6 +45,8 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
     async def lifespan(_app: FastAPI):
         store.initialize()
         store.recover_jobs()
+        with store.connect(write=True) as conn:
+            recover_pending_mail(conn)
         worker.stopped.clear()
         thread = Thread(target=worker.run, daemon=True, name="answer-queue")
         thread.start()
@@ -288,6 +291,11 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
                 item = dict(row)
                 item["turns"] = json.loads(item["turns"])
                 item["context"] = json.loads(item["context"])
+                item["mail"] = mail_thread(conn, row["id"])
+                item["aliases"] = [key[0] for key in conn.execute(
+                    "SELECT question_key FROM quality_keys WHERE case_id = ? AND question_key != ? ORDER BY question_key",
+                    (row["id"], canonical_question(row["canonical_question"] or "")),
+                )]
                 item["citations"] = [
                     encode_citation(citation, versions)
                     for citation in conn.execute(EVIDENCE_SQL + " WHERE s.question_id = ?", (row["question_id"],))
@@ -296,47 +304,80 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
                 items.append(item)
             return {"items": items}
 
+    @app.get("/api/v1/quality/mail/{message_id}/eml")
+    def download_mail(message_id: str, user: Principal = Depends(principal)) -> Response:
+        with store.connect() as conn:
+            row = conn.execute(
+                """SELECT m.*, request.id AS root_message_id FROM quality_mail m
+                JOIN quality_cases k ON k.id = m.case_id
+                JOIN questions q ON q.id = k.question_id
+                JOIN quality_mail request ON request.case_id = k.id AND request.direction = 'request'
+                WHERE m.id = ? AND (? = 'quality' OR (q.principal = ? AND q.role = ?))""",
+                (message_id, user.role, user.id, user.role),
+            ).fetchone()
+            if row is None:
+                fail(404, "mail_not_found")
+            return Response(
+                as_eml(row, row["root_message_id"]), media_type="message/rfc822",
+                headers={"Content-Disposition": f'attachment; filename="quality-{row["id"]}.eml"'},
+            )
+
     @app.put("/api/v1/quality/cases/{case_id}")
     def review_case(case_id: str, data: CaseReview, user: Principal = Depends(reviewer)) -> dict:
         with store.connect(write=True) as conn:
             row = conn.execute(
-                """SELECT k.status, q.as_of, q.role, q.context, q.document_ids, q.turns
+                """SELECT k.status, k.canonical_question, k.answer, k.effective_to,
+                q.as_of, q.role, q.context, q.document_ids, q.turns
                 FROM quality_cases k JOIN questions q ON q.id = k.question_id WHERE k.id = ?""",
                 (case_id,),
             ).fetchone()
             if row is None:
                 fail(404, "case_not_found")
-            if data.decision == "withdraw":
-                if row["status"] != "published":
-                    fail(409, "case_not_published")
-                conn.execute(
-                    "UPDATE quality_cases SET status = 'withdrawn', reviewed_by = ?, reviewed_at = ? WHERE id = ?",
-                    (user.id, now(), case_id),
+            thread = mail_thread(conn, case_id)
+            latest = thread[-1] if thread else None
+            reviewed_at = now()
+            if data.decision != "publish":
+                expected = "pending" if data.decision == "dismiss" else "published"
+                if row["status"] != expected:
+                    fail(409, "case_already_reviewed" if expected == "pending" else "case_not_published")
+                if data.in_reply_to and (not latest or latest["id"] != data.in_reply_to):
+                    fail(409, "mail_thread_changed")
+                status, reply = (
+                    ("dismissed", "Служба качества закрыла запрос без подтверждённого ответа.")
+                    if data.decision == "dismiss" else ("withdrawn", "Служба качества отозвала ранее опубликованный ответ.")
                 )
-                return {"id": case_id, "status": "withdrawn"}
-            if row["status"] != "pending":
+                conn.execute(
+                    "UPDATE quality_cases SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?",
+                    (status, user.id, reviewed_at, case_id),
+                )
+                return {"id": case_id, "status": status, "mail_id": send_reply(conn, thread, reply, reviewed_at)}
+            if row["status"] not in {"pending", "published"}:
                 fail(409, "case_already_reviewed")
-            if data.decision == "dismiss":
-                conn.execute(
-                    "UPDATE quality_cases SET status = 'dismissed', reviewed_by = ?, reviewed_at = ? WHERE id = ?",
-                    (user.id, now(), case_id),
-                )
-                return {"id": case_id, "status": "dismissed"}
             effective_to = data.effective_to.isoformat() if data.effective_to else None
             if effective_to and effective_to < row["as_of"]:
                 fail(422, "invalid_effective_date")
             keys = sorted({canonical_question(text) for text in [data.question, *data.aliases]})
             if "" in keys:
                 fail(422, "invalid_publication_question")
+            if row["status"] == "published" and (data.question, data.answer, effective_to) == (
+                row["canonical_question"], row["answer"], row["effective_to"],
+            ):
+                previous_keys = [item[0] for item in conn.execute(
+                    "SELECT question_key FROM quality_keys WHERE case_id = ? ORDER BY question_key", (case_id,),
+                )]
+                if keys == previous_keys:
+                    return {"id": case_id, "status": "published", "mail_id": latest["id"] if latest else None}
+            if data.in_reply_to and (not latest or latest["id"] != data.in_reply_to):
+                fail(409, "mail_thread_changed")
             has_conflict = conn.execute(
                 """SELECT 1 FROM quality_cases k JOIN quality_keys keys ON k.id = keys.case_id
                 JOIN questions q ON q.id = k.question_id
-                WHERE k.status = 'published' AND k.answer != ?
+                WHERE k.id != ? AND k.status = 'published' AND k.answer != ?
                   AND keys.question_key IN (SELECT value FROM json_each(?))
                   AND q.role = ? AND q.context = ? AND q.document_ids = ? AND q.turns = ?
                   AND (k.effective_to IS NULL OR k.effective_to >= ?)
                   AND (? IS NULL OR q.as_of <= ?) LIMIT 1""",
-                (data.answer, json_dump(keys), row["role"], row["context"], row["document_ids"], row["turns"],
+                (case_id, data.answer, json_dump(keys), row["role"], row["context"], row["document_ids"], row["turns"],
                  row["as_of"], effective_to, effective_to),
             ).fetchone()
             if has_conflict:
@@ -344,10 +385,11 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
             conn.execute(
                 """UPDATE quality_cases SET status = 'published', canonical_question = ?, answer = ?,
                 effective_to = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?""",
-                (data.question, data.answer, effective_to, user.id, now(), case_id),
+                (data.question, data.answer, effective_to, user.id, reviewed_at, case_id),
             )
+            conn.execute("DELETE FROM quality_keys WHERE case_id = ?", (case_id,))
             conn.executemany("INSERT INTO quality_keys VALUES (?, ?)", [(case_id, key) for key in keys])
-            return {"id": case_id, "status": "published"}
+            return {"id": case_id, "status": "published", "mail_id": send_reply(conn, thread, data.answer, reviewed_at)}
 
     @app.get("/api/v1/quality/practices")
     def practice_queue(_user: Principal = Depends(reviewer)) -> dict:

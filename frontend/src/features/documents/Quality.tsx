@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Check, ClipboardCheck, CornerUpLeft, FileCheck2, LoaderCircle } from 'lucide-react'
+import { Check, ClipboardCheck, CornerUpLeft, FileCheck2, LoaderCircle, Mail } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, scopeFields } from '../../shared/api'
 import type { Page, PracticeQueueItem, QualityCase } from '../../shared/api'
 import { SourceDialog } from '../sources/SourceDialog'
+import { MailThread } from './MailThread'
 
 const caseStatuses = { pending: 'На проверке', published: 'Опубликован', dismissed: 'Закрыт', withdrawn: 'Отозван' }
 const practiceStatuses = { pending_review: 'На проверке', approved: 'Одобрен', dismissed: 'Отклонён' }
@@ -57,10 +58,10 @@ export function Quality() {
   const reports = practices.filter((item) => item.status === 'pending_review').length
   return <section className="content-page">
     <div className="page-heading"><span className="square-icon"><ClipboardCheck size={22} /></span><div>
-      <h1>Служба качества</h1><p>Проверяйте вопросы без ответа и примеры применения регламентов.</p>
+      <h1>Служба качества</h1><p>Отвечайте на письма сотрудников и проверяйте примеры применения регламентов.</p>
     </div></div>
     <div className="tabs" aria-label="Очереди проверки">
-      <button type="button" aria-pressed={tab === 'cases'} onClick={() => setTab('cases')}>Вопросы <span>{pending}</span></button>
+      <button type="button" aria-pressed={tab === 'cases'} onClick={() => setTab('cases')}>Входящие письма <span>{pending}</span></button>
       <button type="button" aria-pressed={tab === 'practices'} onClick={() => setTab('practices')}>Примеры применения <span>{reports}</span></button>
     </div>
     {failure && <p className="alert error" role="alert">{failure}</p>}
@@ -75,16 +76,21 @@ export function Quality() {
         {scopeFields.filter(({ key }) => item.context[key]).map(({ key, label }) => (
           <p className="soft" key={key}>{label} · {item.context[key]}</p>
         ))}
+        {Boolean(item.context.departments?.length) && <p className="soft">Подразделения · {item.context.departments?.join(', ')}</p>}
         {item.citations.map((citation) => <button type="button" className="button text-button review-citation" key={citation.id} onClick={() => setSourceId(citation.id)}>
           <FileCheck2 size={16} />{citation.title} · {formatLocator(citation.locator)}
         </button>)}
-        {item.answer && item.status === 'published' && <p className="published-text">{item.answer}</p>}
-        {item.status === 'pending' && (selectedCase === item.id
-          ? <ReviewForm item={item} busy={working} onCancel={() => setSelectedCase(null)} onReview={(payload) => void review('/quality/cases/' + item.id, payload)} />
-          : <button type="button" className="button secondary" onClick={() => setSelectedCase(item.id)}>Проверить и дать ответ</button>
+        <MailThread mail={item.mail} expanded={item.status === 'pending'} />
+        {!item.mail.length && item.answer && item.status === 'published' && <p className="published-text">{item.answer}</p>}
+        {(item.status === 'pending' || (item.status === 'published' && item.mail.length > 0)) && (selectedCase === item.id
+          ? <ReviewForm item={item} busy={working} onCancel={() => setSelectedCase(null)} onReview={(payload) => void review(
+            '/quality/cases/' + item.id, { ...payload, in_reply_to: item.mail.at(-1)?.id },
+          )} />
+          : <button type="button" className="button secondary" onClick={() => setSelectedCase(item.id)}><Mail size={16} />
+            {item.status === 'pending' ? 'Ответить в цепочке' : 'Отправить уточнённый ответ'}</button>
         )}
         {item.status === 'published' && <button type="button" className="button text-button" disabled={working}
-          onClick={() => void review('/quality/cases/' + item.id, { decision: 'withdraw' })}><CornerUpLeft size={16} /> Отозвать ответ</button>}
+          onClick={() => void review('/quality/cases/' + item.id, { decision: 'withdraw', in_reply_to: item.mail.at(-1)?.id })}><CornerUpLeft size={16} /> Отозвать ответ</button>}
       </article>)}
     </>}
     {tab === 'practices' && <>
@@ -109,10 +115,10 @@ export function Quality() {
 function ReviewForm({ item, busy, onReview, onCancel }: {
   item: QualityCase; busy: boolean; onReview: (payload: object) => void; onCancel: () => void
 }) {
-  const [answer, setAnswer] = useState('')
-  const [question, setQuestion] = useState(item.question)
-  const [aliases, setAliases] = useState('')
-  const [ends, setEnds] = useState('')
+  const [answer, setAnswer] = useState(item.answer ?? '')
+  const [question, setQuestion] = useState(item.canonical_question ?? item.question)
+  const [aliases, setAliases] = useState(item.aliases.join('\n'))
+  const [ends, setEnds] = useState(item.effective_to ?? '')
 
   function publish(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -134,9 +140,9 @@ function ReviewForm({ item, busy, onReview, onCancel }: {
       </div>
     </details>
     <div className="row-actions">
-      <button className="button primary" type="submit" disabled={busy}>{busy ? 'Сохраняем…' : 'Опубликовать ответ'}</button>
+      <button className="button primary" type="submit" disabled={busy}>{busy ? 'Сохраняем…' : 'Ответить и обновить базу знаний'}</button>
       <button className="button secondary" type="button" disabled={busy} onClick={onCancel}>Отмена</button>
-      <button className="button text-button" type="button" disabled={busy} onClick={() => onReview({ decision: 'dismiss' })}>Закрыть запрос</button>
+      {item.status === 'pending' && <button className="button text-button" type="button" disabled={busy} onClick={() => onReview({ decision: 'dismiss' })}>Закрыть запрос</button>}
     </div>
   </form>
 }

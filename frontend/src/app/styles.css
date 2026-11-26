@@ -244,6 +244,13 @@ textarea:not(.composer > textarea) { resize: vertical; }
 .review-citation { justify-content: flex-start; text-align: left; }
 .review-form { width: 100%; max-width: 660px; margin-top: 5px; border-top: 1px solid var(--line); padding-top: 13px; }
 .published-text { padding: 9px 12px; border-left: 3px solid #6ca992; background: #f1f7f4; }
+.mail-thread { width: 100%; margin: 5px 0; font-size: .88rem; overflow-wrap: anywhere; }
+.mail-thread summary { cursor: pointer; color: var(--green); }
+.mail-message { display: grid; gap: 8px; padding: 12px; margin-top: 8px; border: 1px solid var(--line); border-radius: 9px; }
+.mail-message dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 9px; color: var(--muted); }
+.mail-message dd { margin: 0; }
+.mail-message p { white-space: pre-wrap; }
+.mail-message a { justify-self: start; color: var(--green); }
 .row-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .dialog {

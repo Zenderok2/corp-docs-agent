@@ -74,6 +74,7 @@ class CaseReview(StrictModel):
     question: QuestionText | None = None
     aliases: list[QuestionText] = Field(default_factory=list, max_length=5)
     effective_to: date | None = None
+    in_reply_to: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")] | None = None
 
     @model_validator(mode="after")
     def validate_publication(self) -> "CaseReview":

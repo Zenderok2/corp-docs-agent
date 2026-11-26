@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, post, scopeFields } from '../../shared/api'
 import type { Answer, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
+import { MailThread } from '../documents/MailThread'
 import { SourceDialog } from '../sources/SourceDialog'
 import { PracticeDialog } from './PracticeDialog'
 
@@ -65,6 +66,8 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
         retries = 0
         if (value.status === 'queued' || value.status === 'running') {
           timer = window.setTimeout(poll, 900)
+        } else if (value.result && 'outcome' in value.result && value.result.quality_case?.status === 'pending') {
+          timer = window.setTimeout(poll, 5000)
         }
       } catch (error) {
         if (!abort.signal.aborted) {
@@ -284,7 +287,8 @@ function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: 
       </section>)}
     </div>}
     {quotes(ungrouped)}
-    {answer.quality_case?.status === 'pending' && <p className="review-status"><ClipboardCheck size={17} /> Запрос передан в службу качества.</p>}
+    {answer.quality_case?.status === 'pending' && <p className="review-status"><ClipboardCheck size={17} /> Запрос отправлен службе качества. Копия в тестовой почте.</p>}
+    {answer.quality_case?.mail && <MailThread mail={answer.quality_case.mail} />}
     {answer.quality_answer && <div className="knowledge-answer">
       {answer.outcome !== 'quality_answer' && <strong>Ответ службы качества</strong>}
       <p>{answer.quality_answer.answer}</p>

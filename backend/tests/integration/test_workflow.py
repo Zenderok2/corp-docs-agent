@@ -1,5 +1,7 @@
 from dataclasses import replace
 from datetime import date
+from email import policy
+from email.parser import BytesParser
 import json
 from pathlib import Path
 from time import monotonic, sleep
@@ -169,26 +171,75 @@ def test_gap_approved_answer_and_withdrawal(settings):
         result = wait_question(client, original)["result"]
         assert result["outcome"] == "not_found"
         case_id = result["quality_case"]["id"]
-        assert client.put(f"/api/v1/quality/cases/{case_id}", json={"decision": "dismiss"}).status_code == 403
+        request, = result["quality_case"]["mail"]
+        mail_url = f"/api/v1/quality/mail/{request['id']}/eml"
+        message = BytesParser(policy=policy.default).parsebytes(client.get(mail_url).content)
+        assert message["To"] == "quality@corp-docs.test"
+        assert message["Cc"] == request["cc"]
+        assert GAP_QUESTION in message.get_content() and "Причина" in message.get_content()
+        employee_cookie = client.cookies.get("corp_docs_session")
+        case_url = f"/api/v1/quality/cases/{case_id}"
+        assert client.put(case_url, json={"decision": "dismiss"}).status_code == 403
+        client.cookies.clear()
+        client.get("/api/v1/session")
+        assert client.get(mail_url).status_code == 404
         assert client.post("/api/v1/session", json={"role": "quality", "code": "invalid"}).status_code == 401
         client.post("/api/v1/session", json={"role": "quality", "code": "quality-test"})
         assert client.get("/api/v1/quality/cases").json()["items"][0]["id"] == case_id
         knowledge = "Согласуйте гостевой пропуск с администратором офиса."
-        publish = client.put(f"/api/v1/quality/cases/{case_id}", json={
+        publication = {
             "decision": "publish", "question": GAP_QUESTION, "answer": knowledge,
             "aliases": ["Как попасть в офис в выходной день?"],
-        })
+            "in_reply_to": request["id"],
+        }
+        publish = client.put(case_url, json=publication)
         assert publish.status_code == 200
-        client.delete("/api/v1/session")
+        assert client.put(case_url, json=publication).json() == publish.json()
+        reply_id = publish.json()["mail_id"]
+        reply = BytesParser(policy=policy.default).parsebytes(client.get(f"/api/v1/quality/mail/{reply_id}/eml").content)
+        assert reply["In-Reply-To"] == message["Message-ID"]
+        assert reply["To"] == message["Cc"] and reply["From"] == message["To"]
+        assert reply.get_content().strip() == knowledge
+        corrected = "Перед выходными согласуйте заявку на гостевой пропуск с администратором офиса."
+        assert client.put(case_url, json={**publication, "answer": corrected}).status_code == 409
+        correction = client.put(case_url, json={**publication, "answer": corrected, "in_reply_to": reply_id})
+        assert correction.status_code == 200
+        quality_cookie = client.cookies.get("corp_docs_session")
+        client.cookies.clear()
+        client.cookies.set("corp_docs_session", employee_cookie)
+        thread = wait_question(client, original)["result"]["quality_case"]["mail"]
+        assert len(thread) == 3 and thread[-1]["body"] == corrected
+        client.cookies.clear()
+        client.get("/api/v1/session")
         new = client.post("/api/v1/questions", json={"question": "Как попасть в офис в выходной день?"}).json()["id"]
         reused = wait_question(client, new)["result"]
         assert reused["outcome"] == "quality_answer"
-        assert reused["quality_answer"]["answer"] == knowledge
+        assert reused["quality_answer"]["answer"] == corrected
         assert reused["citations"] == []
-        client.post("/api/v1/session", json={"role": "quality", "code": "quality-test"})
-        assert client.put(f"/api/v1/quality/cases/{case_id}", json={"decision": "withdraw"}).status_code == 200
-        client.delete("/api/v1/session")
+        next_cookie = client.cookies.get("corp_docs_session")
+        client.cookies.clear()
+        client.cookies.set("corp_docs_session", quality_cookie)
+        assert client.put(case_url, json={"decision": "withdraw"}).status_code == 200
+        client.cookies.clear()
+        client.cookies.set("corp_docs_session", next_cookie)
         assert client.get(f"/api/v1/questions/{new}").status_code == 409
+
+
+def test_pending_mail_is_migrated_once(settings):
+    with TestClient(create_app(settings, ScriptedChat())) as client:
+        client.get("/api/v1/session")
+        question_id = client.post("/api/v1/questions", json={"question": GAP_QUESTION}).json()["id"]
+        case = wait_question(client, question_id)["result"]["quality_case"]
+    with Store(settings.database).connect(write=True) as conn:
+        conn.execute("DROP TABLE quality_mail")
+        conn.execute("PRAGMA user_version = 1")
+    for _ in range(2):
+        with TestClient(create_app(settings, ScriptedChat())) as restarted:
+            restarted.post("/api/v1/session", json={"role": "quality", "code": "quality-test"})
+            item, = restarted.get("/api/v1/quality/cases").json()["items"]
+            assert item["id"] == case["id"]
+            migrated, = item["mail"]
+            assert GAP_QUESTION in migrated["body"]
 
 
 def test_restricts_corpus_before_lexical_search_and_respects_supersession(settings, tmp_path):
