@@ -19,6 +19,7 @@ from corp_docs_agent.retrieval.terms import canonical_question, glossary_hints, 
 
 logger = logging.getLogger(__name__)
 MAX_FOLLOW_UPS = 2
+COVERAGE_BUDGET_SECONDS = 30.0
 SUMMARY_BUDGET_SECONDS = 60.0
 SCOPE_QUESTIONS = {
     "legal_entity": "О каком юридическом лице идёт речь?",
@@ -334,7 +335,7 @@ class AnswerWorker:
                            "scope": source.version.metadata["scope"]} for source in sources],
         }
         try:
-            coverage, call_usage = self.chat.check_coverage(checks, min(12, remaining))
+            coverage, call_usage = self.chat.check_coverage(checks, min(COVERAGE_BUDGET_SECONDS, remaining))
         except ProviderError:
             add_chat_usage(usage, {})
             return False

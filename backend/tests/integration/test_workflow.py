@@ -196,6 +196,7 @@ def test_partial_answer_uses_selected_evidence_for_coverage_review(settings, com
         def check_coverage(self, data, timeout):
             assert data["question"] == LICENSE_QUESTION and len(data["citations"]) == 1
             assert "не более 90 календарных дней" in data["citations"][0]["text"]
+            assert 12 < timeout <= 30
             return Coverage(complete=complete), {"chat_calls": 1}
 
     with TestClient(create_app(settings, CoverageChat())) as client:
