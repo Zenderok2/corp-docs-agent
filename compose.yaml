@@ -65,7 +65,7 @@ services:
     logging: *logging
 
   chat:
-    image: ghcr.io/ggml-org/llama.cpp:server-b12535
+    image: &llama-image ghcr.io/ggml-org/llama.cpp:server@sha256:b24873ae66a4732e0b4b66dd7dc658066ccad6e8c63524278e92eebc767aacbe
     command:
       - --host
       - "0.0.0.0"
@@ -90,7 +90,7 @@ services:
     logging: *logging
 
   embeddings:
-    image: ghcr.io/ggml-org/llama.cpp:server-b12535
+    image: *llama-image
     profiles: [semantic]
     command:
       - --host
@@ -122,7 +122,7 @@ services:
     logging: *logging
 
   chroma:
-    image: chromadb/chroma:1.3.5
+    image: chromadb/chroma:1.3.5@sha256:111a6bd768be19721f5b4e88567d0e1d1f5c2ab5161129e711c0a431e667b128
     profiles: [semantic]
     environment:
       ANONYMIZED_TELEMETRY: "false"
