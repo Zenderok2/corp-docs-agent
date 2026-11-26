@@ -1,0 +1,59 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.egg-info/
+build/
+dist/
+
+# Runtime state; demo fixtures in data/ remain tracked
+runtime/
+*.gguf
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.log
+
+# Local editor and OS state
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# React/Vite
+node_modules/
+.vite/
+*.tsbuildinfo
+playwright-report/
+test-results/
+
+# SQLite sidecars and local document stores
+*.sqlite-*
+*.sqlite3-*
+data/inbox/*
+!data/inbox/.gitkeep
+!data/inbox/README.md
+data/private/
+.chroma/
+
+# Preserved local experiment and private contest materials
+/archive/
+/data/inbox/**
+!/data/inbox/.gitkeep
