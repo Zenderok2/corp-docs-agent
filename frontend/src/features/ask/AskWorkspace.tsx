@@ -5,7 +5,7 @@ import {
   FileText, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, ScanText, Search, Sparkles,
 } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, post, scopeFields } from '../../shared/api'
-import type { Answer, Citation, Question, Scope, Session } from '../../shared/api'
+import type { Answer, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
 import { SourceDialog } from '../sources/SourceDialog'
 import { PracticeDialog } from './PracticeDialog'
 
@@ -47,6 +47,7 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
   const [expanded, setExpanded] = useState(false)
   const [current, setCurrent] = useState<Question | null>(null)
   const [followUp, setFollowUp] = useState('')
+  const [departmentSelection, setDepartmentSelection] = useState<{ id: string; names: string[] } | null>(null)
   const [sending, setSending] = useState(false)
   const [failure, setFailure] = useState('')
   const [sourceId, setSourceId] = useState<string | null>(null)
@@ -79,19 +80,24 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
   const displayed = current?.id === activeId ? current : null
   const result = displayed?.result && 'outcome' in displayed.result ? displayed.result : null
   const awaiting = Boolean(activeId && !failure && (!displayed || ['queued', 'running'].includes(displayed.status)))
+  const selectedDepartments = departmentSelection?.id === activeId ? departmentSelection?.names ?? [] : []
 
-  async function send(question: string, parent?: string, detail?: Scope) {
+  async function send(question: string, parent?: string, detail?: QuestionContext) {
     if (!question.trim() || sending || !session.visible_versions) return
     setFailure('')
     setSending(true)
     try {
       const path = parent ? '/questions/' + parent + '/follow-ups' : '/questions'
+      const departmentNames = context.department?.split(';').map((value) => value.trim()).filter(Boolean) ?? []
       const request = parent
         ? { answer: question, context: detail ?? {} }
-        : { question, context, as_of: asOf || undefined }
+        : { question, context: departmentNames.length > 1
+          ? { ...context, department: null, departments: departmentNames }
+          : { ...context, department: departmentNames[0] ?? null }, as_of: asOf || undefined }
       const response = await post<Interaction>(path, request, crypto.randomUUID())
       setDraft('')
       setFollowUp('')
+      setDepartmentSelection(null)
       onSelect(response.id)
     } catch (error) {
       setFailure(describeError(error))
@@ -128,7 +134,25 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
         {result && <AnswerPanel answer={result} openSource={setSourceId} />}
         {result?.clarification && <div className="clarification">
           <div className="clarification-title"><CircleHelp size={19} /><h3>{result.clarification.question}</h3></div>
-          {result.clarification.options.length > 0 && <div className="option-list">
+          {result.clarification.field === 'department' && result.clarification.options.length > 0 ? <div className="department-options">
+            <fieldset>
+              <legend>Выберите одно или несколько подразделений</legend>
+              <div className="option-list">{result.clarification.options.map((option) => <label className="pill-button" key={option}>
+                <input type="checkbox" checked={selectedDepartments.includes(option)}
+                  disabled={sending || (selectedDepartments.length === 5 && !selectedDepartments.includes(option))}
+                  onChange={(event) => setDepartmentSelection({ id: displayed.id, names: event.target.checked
+                    ? [...selectedDepartments, option] : selectedDepartments.filter((name) => name !== option) })} />{option}
+              </label>)}</div>
+            </fieldset>
+            <div className="option-list">
+              <button type="button" className="button primary" disabled={sending || !selectedDepartments.length} onClick={() => void send(
+                selectedDepartments.join(', '), displayed.id, { departments: selectedDepartments },
+              )}>Продолжить <ArrowRight size={15} /></button>
+              <button type="button" className="button text-button" disabled={sending} onClick={() => void send(
+                'Подразделение пока неизвестно', displayed.id,
+              )}>Не знаю подразделение</button>
+            </div>
+          </div> : result.clarification.options.length > 0 && <div className="option-list">
             {result.clarification.options.map((option) => {
               const field = result.clarification?.field
               return <button type="button" className="pill-button" key={option} disabled={sending} onClick={() => void send(
@@ -140,7 +164,7 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
             event.preventDefault()
             const field = result.clarification?.field
             const value = followUp.trim()
-            void send(value, displayed.id, field ? { [field]: value } : {})
+            void send(value, displayed.id, field && field !== 'department' ? { [field]: value } : {})
           }}>
             <input aria-label="Ответ на уточняющий вопрос" placeholder="Введите уточнение" required maxLength={result.clarification.field ? 160 : 800} value={followUp} onChange={(event) => setFollowUp(event.target.value)} />
             <button className="button primary" type="submit" disabled={sending || !followUp.trim()} aria-label="Отправить уточнение"><ArrowUp size={19} /></button>
@@ -177,7 +201,9 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
             }}
           />
           {expanded && <div className="context-fields">
-            {scopeFields.map(({ key, label }) => <label key={key}>{label}<input type="text" value={context[key] ?? ''} maxLength={160} onChange={(event) => setContext({ ...context, [key]: event.target.value || null })} /></label>)}
+            {scopeFields.map(({ key, label }) => <label key={key}>{label}<input type="text" value={context[key] ?? ''} maxLength={160}
+              placeholder={key === 'department' ? 'Можно через точку с запятой' : undefined}
+              onChange={(event) => setContext({ ...context, [key]: event.target.value || null })} /></label>)}
             <label>Дата применимости<input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} /></label>
           </div>}
           <div className="composer-actions">
@@ -233,6 +259,16 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
 
 function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: string) => void }) {
   const positive = answer.outcome === 'answered' || answer.outcome === 'quality_answer'
+  const groupedIds = new Set(answer.departments.flatMap((department) => department.citation_ids))
+  const ungrouped = answer.citations.filter((citation) => !groupedIds.has(citation.id))
+  function quotes(citations: Citation[]) {
+    if (!citations.length) return null
+    return <ol className="answer-quotes">{citations.map((citation) => {
+      const number = answer.citations.indexOf(citation) + 1
+      return <li key={citation.id}><p>{citation.quote}</p><button type="button" className="inline-source"
+        onClick={() => openSource(citation.id)} aria-label={'Открыть источник ' + number}>{number}</button></li>
+    })}</ol>
+  }
   return <article className="answer-panel card">
     <div className="answer-heading">
       <span className={positive ? 'square-icon' : 'square-icon amber'}>{positive ? <Check size={21} /> : <CircleHelp size={20} />}</span>
@@ -240,12 +276,14 @@ function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: 
     </div>
     {explanations[answer.message_code] && <p className="answer-explanation">{explanations[answer.message_code]}</p>}
     {answer.corpus_changed && <p className="alert neutral">После ответа корпус обновился. Проверьте актуальность новым вопросом.</p>}
-    {answer.citations.length > 0 && <ol className="answer-quotes">
-      {answer.citations.map((citation, index) => <li key={citation.id}>
-        <p>{citation.quote}</p>
-        <button type="button" className="inline-source" onClick={() => openSource(citation.id)} aria-label={'Открыть источник ' + (index + 1)}>{index + 1}</button>
-      </li>)}
-    </ol>}
+    {answer.departments.length > 0 && <div className="department-answers">
+      {answer.clarification?.field === 'department' && <p className="answer-explanation">Найдены возможные положения для разных подразделений.</p>}
+      {answer.departments.map(({ name, citation_ids }) => <section key={name}>
+        <h3>{name}</h3>
+        {quotes(answer.citations.filter((citation) => citation_ids.includes(citation.id))) ?? <p>Подтверждённые положения не найдены.</p>}
+      </section>)}
+    </div>}
+    {quotes(ungrouped)}
     {answer.quality_case?.status === 'pending' && <p className="review-status"><ClipboardCheck size={17} /> Запрос передан в службу качества.</p>}
     {answer.quality_answer && <div className="knowledge-answer">
       {answer.outcome !== 'quality_answer' && <strong>Ответ службы качества</strong>}

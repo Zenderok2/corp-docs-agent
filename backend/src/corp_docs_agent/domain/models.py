@@ -23,16 +23,34 @@ class Context(StrictModel):
     license_type: ShortText | None = None
 
 
+class QuestionContext(Context):
+    departments: list[ShortText] | None = Field(default=None, min_length=1, max_length=5)
+
+    @model_validator(mode="after")
+    def normalize_departments(self) -> "QuestionContext":
+        if self.departments:
+            if self.department:
+                raise ValueError("Specify department or departments")
+            choices = {" ".join(value.casefold().replace("ё", "е").split()): value for value in self.departments}
+            self.departments = [choices[key] for key in sorted(choices)]
+            if len(self.departments) == 1:
+                self.department, self.departments = self.departments[0], None
+        return self
+
+    def stored(self) -> dict:
+        return self.model_dump(exclude={"departments"} if self.departments is None else None)
+
+
 class Ask(StrictModel):
     question: QuestionText
     as_of: date | None = None
-    context: Context = Field(default_factory=Context)
+    context: QuestionContext = Field(default_factory=QuestionContext)
     document_ids: list[str] = Field(default_factory=list, max_length=25)
 
 
 class FollowUp(StrictModel):
     answer: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=800)]
-    context: Context = Field(default_factory=Context)
+    context: QuestionContext = Field(default_factory=QuestionContext)
 
 
 class Login(StrictModel):

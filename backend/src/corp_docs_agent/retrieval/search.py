@@ -7,7 +7,7 @@ import re
 import sqlite3
 
 from corp_docs_agent.persistence.store import CorpusVersion, json_dump
-from corp_docs_agent.retrieval.terms import fts_query, index_text, query_terms
+from corp_docs_agent.retrieval.terms import concepts, fts_query, query_terms, scope_key, words
 
 
 CANDIDATE_LIMIT = 10
@@ -31,6 +31,14 @@ def normalized(value: str) -> str:
     return " ".join(value.casefold().replace("ё", "е").split())
 
 
+def mentioned_departments(text: str, labels: set[str]) -> list[str]:
+    text_words = " " + " ".join(words(text)) + " "
+    named_aliases = {"диб", "уиб"}.intersection(concepts(text))
+    return [label for label in sorted(labels) if (
+        f" {' '.join(words(label))} " in text_words or scope_key(label) in named_aliases
+    )]
+
+
 def eligible_versions(
     versions: dict[str, CorpusVersion], as_of: date, context: dict, document_ids: list[str],
 ) -> tuple[dict[str, CorpusVersion], dict[str, dict]]:
@@ -40,10 +48,13 @@ def eligible_versions(
         if not version.applies_on(as_of):
             continue
         scope = {key: value for key, value in version.metadata["scope"].items() if value}
-        if any(context.get(key) and normalized(context[key]) != normalized(value) for key, value in scope.items()):
-            continue
-        date_matches[version.id] = version
-        missing[version.id] = {key: value for key, value in scope.items() if not context.get(key)}
+        for key, value in scope.items():
+            compare = scope_key if key == "department" else normalized
+            if context.get(key) and compare(context[key]) != compare(value):
+                break
+        else:
+            date_matches[version.id] = version
+            missing[version.id] = {key: value for key, value in scope.items() if not context.get(key)}
 
     superseded = set()
     for version in date_matches.values():
@@ -140,15 +151,15 @@ def expand_evidence(
     primary_ids = {candidate.id for candidate in primary}
     return [
         item for item in additional
-        if item.id not in primary_ids and (item.id in links or set(index_text(item.text).split()).intersection(terms))
+        if item.id not in primary_ids and (item.id in links or set(concepts(item.text)).intersection(terms))
     ]
 
 
-def select_evidence(primary: list[Candidate], adjacent: list[Candidate]) -> list[Candidate]:
+def select_evidence(primary: list[Candidate], adjacent: list[Candidate], anchors: list[Candidate]) -> list[Candidate]:
     version_counts: Counter = Counter()
     visited_blocks = set()
     selected = []
-    for candidate in primary[:5] + adjacent[:3] + primary[5:] + adjacent[3:]:
+    for candidate in anchors + primary[:5] + adjacent[:3] + primary[5:] + adjacent[3:]:
         if candidate.block_id in visited_blocks or version_counts[candidate.version.id] == 4:
             continue
         visited_blocks.add(candidate.block_id)
@@ -160,7 +171,9 @@ def select_evidence(primary: list[Candidate], adjacent: list[Candidate]) -> list
 
 
 def search_terms(question: str, turns: list[str], context: dict) -> list[str]:
-    return query_terms(" ".join([question, *turns, *(value for value in context.values() if value)]))
+    scope = [value for value in context.values() if isinstance(value, str)]
+    departments = context.get("departments") or []
+    return query_terms(" ".join([question, *turns, *scope, *departments]))
 
 
 def amount_applies(question: str, passage: str) -> bool:
@@ -192,5 +205,5 @@ def topic_supported(question: str, passages: list[str], *, semantic_match: bool 
     if semantic_match:
         return True
     terms = {term for term in query_terms(question) if not term.isdecimal()}
-    support = terms.intersection({token for passage in passages for token in index_text(passage).split()})
+    support = terms.intersection({token for passage in passages for token in concepts(passage)})
     return bool(terms) and len(support) >= min(len(terms), max(2, ceil(len(terms) * .5)))

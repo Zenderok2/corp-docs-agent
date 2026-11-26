@@ -56,6 +56,63 @@ def wait_question(client, id):
     pytest.fail("The question queue did not complete the test job")
 
 
+def test_department_variants_complex_projects_and_glossary(settings, tmp_path):
+    sources = []
+    for key, department, sentence, group in [
+        ("infra", "Инфраструктура", "РП согласует план проекта за три рабочих дня.", "demo"),
+        ("security", "Дирекция информационной безопасности", "Руководитель проекта согласует план проекта за две недели.", "demo"),
+        ("private", "Другой центр", "РП согласует план проекта за пять рабочих дней.", "staff"),
+    ]:
+        file = tmp_path / (key + ".md")
+        file.write_text(sentence, encoding="utf-8")
+        sources.append({
+            "path": file.name, "key": key, "version": "test", "title": department,
+            "kind": "regulations", "status": "published", "scope": {"department": department}, "groups": [group],
+        })
+    manifest = tmp_path / "project-catalog.json"
+    manifest.write_text(json.dumps({"sources": sources}), encoding="utf-8")
+    assert len(import_catalog(settings, manifest)) == 3
+
+    class ProjectChat(ScriptedChat):
+        def decide(self, data):
+            selected = [source["ref"] for source in data["sources"] if "согласует план проекта" in source["text"]]
+            assert all(len(source["applies_to_departments"]) <= 1 for source in data["sources"] if source["scope"])
+            return Decision(outcome="answered", evidence=selected, clarification=""), {"chat_calls": 1}
+
+    question = "В какой срок проджект-менеджер согласует план проекта?"
+    with TestClient(create_app(settings, ProjectChat())) as client:
+        client.get("/api/v1/session")
+        first = client.post("/api/v1/questions", json={"question": question}).json()["id"]
+        result = wait_question(client, first)["result"]
+        assert result["outcome"] == "needs_clarification"
+        names = ["Дирекция информационной безопасности", "Инфраструктура"]
+        assert result["clarification"]["options"] == names
+        assert result["usage"]["chat_calls"] == 0
+        assert not result["quality_case"]
+        assert [group["name"] for group in result["departments"]] == names
+        by_id = {citation["id"]: citation["quote"] for citation in result["citations"]}
+        for group, expected in zip(result["departments"], ["две недели", "три рабочих дня"], strict=True):
+            assert expected in by_id[group["citation_ids"][0]]
+
+        both = client.post(f"/api/v1/questions/{first}/follow-ups", json={
+            "answer": "Комплексный проект", "context": {"departments": ["ДИБ", "Инфраструктура"]},
+        }).json()["id"]
+        result = wait_question(client, both)["result"]
+        assert result["outcome"] == "answered"
+        assert len(result["departments"]) == 2
+        assert len({citation_id for group in result["departments"] for citation_id in group["citation_ids"]}) == 2
+
+        unknown = first
+        for outcome in ["needs_clarification", "partial"]:
+            unknown = client.post(f"/api/v1/questions/{unknown}/follow-ups", json={
+                "answer": "Подразделение неизвестно",
+            }).json()["id"]
+            unresolved = wait_question(client, unknown)["result"]
+            assert unresolved["outcome"] == outcome
+        assert unresolved["message_code"] == "clarification_exhausted"
+        assert unresolved["quality_case"]["status"] == "pending"
+
+
 def test_dialog_citations_and_practice_survive_restart(settings):
     with TestClient(create_app(settings, ScriptedChat())) as client:
         assert client.get("/api/v1/session").json()["visible_versions"] == 4

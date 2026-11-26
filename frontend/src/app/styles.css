@@ -207,6 +207,12 @@ textarea:not(.composer > textarea) { resize: vertical; }
 .clarification-title { color: #205e4b; }
 .clarification h3 { font-size: .96rem; }
 .option-list { flex-wrap: wrap; }
+.department-options, .department-answers { display: grid; gap: 12px; }
+.department-options fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.department-options legend { margin-bottom: 8px; color: var(--muted); font-size: .85rem; }
+.department-options input { accent-color: var(--green); }
+.department-answers section { display: grid; gap: 8px; padding: 12px 0 0; border-top: 1px solid var(--line); }
+.department-answers h3 { font-size: .94rem; }
 .pending-box { display: flex; align-items: center; gap: 12px; padding: 15px; border: 1px solid var(--line); background: #fff; border-radius: 12px; }
 .pending-box strong { font-size: .94rem; }
 .pending-box p { font-size: .83rem; line-height: 1.5; color: var(--muted); margin-top: 4px; }

@@ -9,10 +9,10 @@ from uuid import uuid4
 from corp_docs_agent.persistence.store import Store, corpus_revision, json_dump, now, visible_versions
 from corp_docs_agent.providers.llama import Chat, Decision, ProviderError
 from corp_docs_agent.retrieval.search import (
-    Candidate, amount_applies, eligible_versions, expand_evidence, lexical_ids, load_candidates, rank_ids,
+    Candidate, amount_applies, eligible_versions, expand_evidence, lexical_ids, load_candidates, mentioned_departments, rank_ids,
     search_terms, select_evidence, topic_supported,
 )
-from corp_docs_agent.retrieval.terms import canonical_question
+from corp_docs_agent.retrieval.terms import canonical_question, scope_key
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,18 @@ def locate_evidence(decision: Decision, sources: list[Candidate]) -> list[tuple[
         source = sources[ref - 1]
         located.append((source, source.start, source.start + len(source.text)))
     return located
+
+
+def department_passages(question: str, candidates: list[Candidate], semantic_support: set[str]) -> dict[str, list[Candidate]]:
+    options: dict[str, list[Candidate]] = {}
+    for item in candidates:
+        if department := item.missing_scope.get("department"):
+            if set(item.missing_scope) == {"department"}:
+                options.setdefault(department, []).append(item)
+    return {
+        department: [item for item in items if topic_supported(question, [item.text], semantic_match=item.id in semantic_support)][:2]
+        for department, items in options.items()
+    }
 
 
 def decide_scope(evidence: list, candidates: list[Candidate], context: dict) -> tuple[str | None, list[str]]:
@@ -117,14 +129,40 @@ class AnswerWorker:
         context = json.loads(question["context"])
         turns = json.loads(question["turns"])
         combined = " ".join([question["question"], *turns])
-        terms = search_terms(question["question"], turns, context)
+        as_of = date.fromisoformat(question["as_of"])
+        document_ids = json.loads(question["document_ids"])
         with self.store.connect() as conn:
             visible = visible_versions(conn, question["role"])
             revision = corpus_revision(conn)
-            versions, missing = eligible_versions(
-                visible, date.fromisoformat(question["as_of"]), context, json.loads(question["document_ids"]),
-            )
+            if not context.get("department") and not context.get("departments"):
+                available, _ = eligible_versions(visible, as_of, context, document_ids)
+                labels = {version.metadata["scope"]["department"] for version in available.values()
+                          if version.metadata["scope"].get("department")}
+                mentioned = mentioned_departments(combined, labels)
+                if len(mentioned) == 1:
+                    context["department"] = mentioned[0]
+                elif 1 < len(mentioned) <= 5:
+                    context["departments"] = mentioned
+            terms = search_terms(question["question"], turns, context)
+            department_versions = {}
+            if departments := context.get("departments"):
+                versions, missing = {}, {}
+                for department in departments:
+                    member_versions, member_missing = eligible_versions(
+                        visible, as_of, {**context, "department": department}, document_ids,
+                    )
+                    department_versions[department] = member_versions
+                    versions.update(member_versions)
+                    missing.update(member_missing)
+            else:
+                versions, missing = eligible_versions(visible, as_of, context, document_ids)
             lexical = lexical_ids(conn, terms, versions)
+            anchors = {
+                department: lexical_ids(conn, terms, {
+                    key: item for key, item in member_versions.items() if item.metadata["scope"].get("department")
+                }, limit=3)
+                for department, member_versions in department_versions.items()
+            }
         vector_ids, semantic_support, vector_usage, vector_state = [], set(), {}, None
         if self.vectors and versions and terms:
             vector_ids, semantic_support, vector_usage, vector_state = self.vectors.search(
@@ -137,7 +175,12 @@ class AnswerWorker:
             primary = [item for item in primary if amount_applies(combined, item.text)]
             adjacent = expand_evidence(conn, primary, versions, missing, terms)
             adjacent = [item for item in adjacent if amount_applies(combined, item.text)]
-            candidates = select_evidence(primary, adjacent)
+            anchor_candidates = load_candidates(conn, [key for ids in anchors.values() for key in ids], versions, missing)
+            anchor_candidates = [item for item in anchor_candidates if amount_applies(combined, item.text)]
+            first_by_department = {}
+            for item in anchor_candidates:
+                first_by_department.setdefault(scope_key(item.version.metadata["scope"]["department"]), item)
+            candidates = select_evidence(primary + anchor_candidates, adjacent, list(first_by_department.values()))
         trace = [{
             "step": "retrieval", "lexical_hits": len(lexical), "vector_hits": len(vector_ids),
             "related_hits": len(adjacent), "candidates": len(candidates), "vector_state": vector_state,
@@ -148,7 +191,20 @@ class AnswerWorker:
         message_code = "no_evidence" if visible else "empty_corpus"
         evidence: list = []
         clarification: dict | None = None
-        if candidates and topic_supported(
+        variants = {
+            department: items for department, items in department_passages(question["question"], primary, semantic_support).items()
+            if items
+        }
+        department_refs = {}
+        if len(variants) > 1:
+            options = sorted(variants)
+            for department in options:
+                items = variants[department]
+                department_refs[department] = list(range(len(evidence), len(evidence) + len(items)))
+                evidence.extend((item, item.start, item.start + len(item.text)) for item in items)
+            outcome = "needs_clarification"
+            clarification = {"question": SCOPE_QUESTIONS["department"], "field": "department", "options": options}
+        elif candidates and topic_supported(
             question["question"], [item.text for item in candidates],
             semantic_match=any(item.id in semantic_support for item in candidates),
         ):
@@ -163,6 +219,8 @@ class AnswerWorker:
                         "ref": number, "title": item.version.metadata["title"],
                         "version": item.version.metadata["version"], "status": item.version.metadata["status"],
                         "missing_scope": item.missing_scope, "text": item.text,
+                        "scope": {field: value for field, value in item.version.metadata["scope"].items() if value},
+                        "applies_to_departments": [dept for dept, subset in department_versions.items() if item.version.id in subset],
                     }
                     for number, item in enumerate(candidates, 1)
                 ],
@@ -192,19 +250,33 @@ class AnswerWorker:
                     clarification = {"question": clarifier, "field": None, "options": []}
                 else:
                     outcome = "partial" if evidence else "not_found"
-            if outcome == "needs_clarification" and len(turns) >= MAX_FOLLOW_UPS:
-                outcome = "partial" if evidence else "not_found"
-                clarification = None
-                message_code = "clarification_exhausted"
-            elif outcome == "answered" and any(source.version.metadata["status"] != "published" for source, _, _ in evidence):
-                outcome = "partial"
-                message_code = "unknown_publication"
-            elif outcome != "not_found":
-                message_code = outcome
+            if department_versions:
+                for department, subset in department_versions.items():
+                    refs = [index for index, (source, _, _) in enumerate(evidence) if source.version.id in subset]
+                    scoped = [index for index in refs if evidence[index][0].version.metadata["scope"].get("department")]
+                    department_refs[department] = refs
+                    if outcome == "answered" and (
+                        not topic_supported(question["question"], [evidence[index][0].text for index in refs],
+                                            semantic_match=any(evidence[index][0].id in semantic_support for index in refs))
+                        or (not scoped and scope_key(department) in first_by_department)
+                    ):
+                        outcome = "partial"
+        if department_versions and not department_refs:
+            department_refs = {department: [] for department in department_versions}
+        if outcome == "needs_clarification" and len(turns) >= MAX_FOLLOW_UPS:
+            outcome = "partial" if evidence else "not_found"
+            clarification = None
+            message_code = "clarification_exhausted"
+        elif outcome == "answered" and any(source.version.metadata["status"] != "published" for source, _, _ in evidence):
+            outcome = "partial"
+            message_code = "unknown_publication"
+        elif outcome != "not_found":
+            message_code = outcome
         trace.append({"step": "verification", "verified_citations": len(evidence)})
         return {
             "outcome": outcome, "message_code": message_code, "as_of": question["as_of"],
             "corpus_revision": revision, "clarification": clarification, "trace": trace, "usage": usage,
+            "department_refs": department_refs,
         }, evidence
 
     def publish(self, question: sqlite3.Row, result: dict, evidence: list, started: float) -> None:
@@ -232,6 +304,10 @@ class AnswerWorker:
                 )
                 citation_ids.append(citation_id)
             result["citation_ids"] = citation_ids
+            result["departments"] = [
+                {"name": department, "citation_ids": [citation_ids[index] for index in refs]}
+                for department, refs in result.pop("department_refs").items()
+            ]
             result["quality_case_id"] = None
             result["quality_answer_id"] = None
             if result["outcome"] in {"not_found", "partial", "conflict"}:

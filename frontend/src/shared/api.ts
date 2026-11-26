@@ -1,6 +1,7 @@
 export type Role = 'demo' | 'staff' | 'quality'
 export type ScopeKey = 'legal_entity' | 'department' | 'product' | 'license_type'
 export type Scope = Partial<Record<ScopeKey, string | null>>
+export type QuestionContext = Scope & { departments?: string[] }
 
 export const scopeFields: ReadonlyArray<{ key: ScopeKey; label: string }> = [
   { key: 'legal_entity', label: 'Юридическое лицо' },
@@ -63,6 +64,7 @@ export type Answer = {
   message_code: string
   as_of: string
   citations: Citation[]
+  departments: Array<{ name: string; citation_ids: string[] }>
   corpus_changed: boolean
   clarification: { question: string; field: ScopeKey | null; options: string[] } | null
   quality_case: { id: string; status: CaseStatus } | null
@@ -96,7 +98,7 @@ export type QuestionSummary = {
 
 export type Question = QuestionSummary & {
   turns: string[]
-  context: Scope
+  context: QuestionContext
   as_of: string
   result: Answer | { error_code: string; latency_ms: number } | null
 }
@@ -110,7 +112,7 @@ export type QualityCase = {
   reason: string
   as_of: string
   turns: string[]
-  context: Scope
+  context: QuestionContext
   role: Role
   citations: Citation[]
 }

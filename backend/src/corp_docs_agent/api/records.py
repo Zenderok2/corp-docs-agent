@@ -125,6 +125,7 @@ def encode_question(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
                 fail(409, "source_access_changed")
             citations.append(encode_citation(citation, versions))
         result["citations"] = citations
+        result.setdefault("departments", [])
         result["practices"] = published_practices(conn, citations, row["role"])
         result["quality_answer"] = None
         if quality_id := result.pop("quality_answer_id"):

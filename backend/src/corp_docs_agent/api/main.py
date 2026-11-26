@@ -182,7 +182,7 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
     def ask(data: Ask, idempotency_key: Idempotency = None, user: Principal = Depends(principal)) -> dict:
         with store.connect(write=True) as conn:
             result = enqueue(
-                conn, settings, user, question=data.question, turns=[], context=data.context.model_dump(),
+                conn, settings, user, question=data.question, turns=[], context=data.context.stored(),
                 as_of=data.as_of or datetime.now(MOSCOW).date(), document_ids=sorted(set(data.document_ids)),
                 parent=None, idempotency_key=idempotency_key, request_body=data.model_dump_json(),
             )
@@ -222,6 +222,10 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
             if prior["outcome"] != "needs_clarification" or len(turns) >= MAX_FOLLOW_UPS:
                 fail(409, "no_open_clarification")
             context = {**json.loads(parent["context"]), **data.context.model_dump(exclude_none=True)}
+            if data.context.department:
+                context.pop("departments", None)
+            if data.context.departments:
+                context["department"] = None
             result = enqueue(
                 conn, settings, user, question=parent["question"], turns=[*turns, data.answer],
                 context=context, as_of=date.fromisoformat(parent["as_of"]), document_ids=json.loads(parent["document_ids"]),
