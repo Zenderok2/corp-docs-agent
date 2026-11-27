@@ -631,6 +631,33 @@ def test_quality_supplement_must_match_current_norms(settings, quality_deadlines
         assert client.put(new_case_url, json=replacement).status_code == 200
 
 
+def test_reported_claim_keeps_verified_deadline_as_an_answer(settings, quality_deadlines):
+    _, request, rules, _ = quality_deadlines
+    rule = rules["request-deadline"]
+    question = "Мне сказали, что заявка на запуск работ обязательно направляется за две недели до начала работ. Это верно?"
+
+    class ClaimChat(ScriptedChat):
+        def decide(self, data):
+            assert data["question"] == question
+            ref = next(item["ref"] for item in data["sources"] if item["text"] == rule)
+            return Decision(outcome="partial", evidence=[ref], clarification=""), {}
+
+        def check_coverage(self, data, timeout):
+            assert data["question"] == question
+            assert [item["text"] for item in data["citations"]] == [rule]
+            return Coverage(complete=True), {}
+
+    with TestClient(create_app(settings, ClaimChat())) as client:
+        client.get("/api/v1/session")
+        submitted = client.post("/api/v1/questions", json={
+            **request, "question": question, "document_ids": ["request-deadline"],
+        })
+        assert submitted.status_code == 202
+        result = wait_question(client, submitted.json()["id"])["result"]
+        assert result["outcome"] == "answered" and result["quality_case"] is None
+        assert [item["quote"] for item in result["citations"]] == [rule]
+
+
 def test_pending_mail_is_migrated_once(settings):
     with TestClient(create_app(settings, ScriptedChat())) as client:
         client.get("/api/v1/session")

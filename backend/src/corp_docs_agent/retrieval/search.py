@@ -7,7 +7,7 @@ import re
 import sqlite3
 
 from corp_docs_agent.persistence.store import CorpusVersion, json_dump
-from corp_docs_agent.retrieval.terms import concepts, fts_query, index_text, query_terms, scope_key
+from corp_docs_agent.retrieval.terms import claim_content, concepts, fts_query, index_text, query_terms, scope_key
 
 
 CANDIDATE_LIMIT = 10
@@ -274,6 +274,6 @@ def amount_applies(question: str, passage: str) -> bool:
 def topic_supported(question: str, passages: list[str], *, semantic_match: bool = False) -> bool:
     if semantic_match:
         return True
-    terms = {term for term in query_terms(question) if not term.isdecimal()}
+    terms = {term for term in query_terms(claim_content(question)) if not term.isdecimal()}
     support = terms.intersection({token for passage in passages for token in concepts(passage)})
     return bool(terms) and len(support) >= min(len(terms), max(2, ceil(len(terms) * .5)))

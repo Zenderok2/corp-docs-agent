@@ -5,6 +5,9 @@ from snowballstemmer import stemmer
 
 WORD = re.compile(r"[a-zа-я0-9]+", re.IGNORECASE)
 CYRILLIC = re.compile(r"^[а-я]+$")
+CLAIM_PREFIX = re.compile(r"^(?:верно|правда|так|действительно)\s+ли(?:\s*,?\s+что\b)?\s+", re.IGNORECASE)
+CLAIM_SUFFIX = re.compile(r"[\s,.!?]+(?:(?:это\s+)?(?:верно|правда)|это\s+так)\s*\?\s*$", re.IGNORECASE)
+REPORTED_CLAIM = re.compile(r"^(?:мне|нам)\s+(?:сказали|сообщили|подсказали)\s*,?\s+что\s+", re.IGNORECASE)
 STOP_WORDS = frozenset(
     """а без близко был была были было быть в вам вас весь вместе во вот все всегда всего всех
     где да даже для до его ее если есть еще же за и из или им их к как какой какая какие каким
@@ -83,6 +86,11 @@ def query_terms(text: str) -> list[str]:
         token for token in concepts(text, drop_stop_words=True) if len(token) > 1 or token.isdigit()
     )
     return list(tokens)[:32]
+
+
+def claim_content(question: str) -> str:
+    content = CLAIM_PREFIX.sub("", CLAIM_SUFFIX.sub("", question))
+    return (REPORTED_CLAIM.sub("", content) or question) if content != question else question
 
 
 def canonical_question(text: str) -> str:

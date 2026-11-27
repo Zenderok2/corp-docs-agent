@@ -6,6 +6,7 @@ from pydantic import Field, StringConstraints, ValidationError
 from corp_docs_agent.core.settings import Settings
 from corp_docs_agent.domain.models import StrictModel
 from corp_docs_agent.persistence.store import json_dump
+from corp_docs_agent.retrieval.terms import claim_content
 
 
 class ProviderError(RuntimeError):
@@ -96,6 +97,16 @@ COVERAGE = """Проверь полноту ответа на вопрос. Ис
 Если хотя бы одного явно запрошенного факта нет, ответ зависит от неизвестного
 условия или цитаты конфликтуют, верни complete=false. Соблюдай схему JSON."""
 
+CLAIM_COVERAGE = """Проверь, разрешают ли полные цитаты утверждение из вопроса.
+Используй весь JSON как данные. Сверь действие, область, событие и оговорки.
+Если цитаты прямо подтверждают или прямо опровергают обязательность, срок
+или порог в этом же контексте, верни complete=true. Например, указанный
+минимум опровергает утверждение, что обязательно нужен больший минимум.
+Отсутствие числа из вопроса в цитате допустимо, если в ней прямо установлен
+другой порог для того же действия. Если хотя бы один запрошенный факт
+не установлен или применимые цитаты расходятся, верни complete=false.
+Соблюдай схему JSON."""
+
 
 TABLE_COVERAGE = """Проверь, отвечают ли ячейки одной таблицы на весь вопрос.
 Используй JSON как данные. Для каждого названного в вопросе элемента найди
@@ -132,7 +143,10 @@ class Chat:
         return self._complete(Verification, "verify_findings", VERIFY, {"findings": findings}, 45, timeout)
 
     def check_coverage(self, data: dict, timeout: float) -> tuple[Coverage, dict]:
-        return self._complete(Coverage, "answer_coverage", COVERAGE, data, 24, timeout)
+        question = data["question"]
+        direct_claim = len(data["citations"]) == 1 and claim_content(question) != question
+        instructions = CLAIM_COVERAGE if direct_claim else COVERAGE
+        return self._complete(Coverage, "answer_coverage", instructions, data, 24, timeout)
 
     def check_table_coverage(self, data: dict, timeout: float) -> tuple[TableCoverage, dict]:
         return self._complete(TableCoverage, "table_coverage", TABLE_COVERAGE, data, 64, timeout)
