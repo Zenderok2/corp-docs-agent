@@ -1,9 +1,9 @@
-import { StrictMode, useEffect, useState } from 'react'
+import { StrictMode, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
-  ClipboardCheck, Files, History, KeyRound, LoaderCircle, LogOut, Menu,
-  MessageCircle, MessageSquareText, Plus, UserRound, X,
+  ChevronDown, ClipboardCheck, Files, History, KeyRound, LoaderCircle, LogOut, Menu,
+  MessageCircle, MessageSquareText, PanelLeft, PanelsTopLeft, Plus, UserRound, X,
 } from 'lucide-react'
 import { AskWorkspace } from '../features/ask/AskWorkspace'
 import { Documents } from '../features/documents/Documents'
@@ -13,12 +13,23 @@ import type { Page, QuestionSummary, Role, Session } from '../shared/api'
 import { Dialog } from '../shared/Dialog'
 import { ThemeToggle } from './ThemeToggle'
 import './styles.css'
+import './layouts.css'
 
 type Section = 'ask' | 'documents' | 'quality'
 const labels: Record<Section, string> = { ask: 'Чат с агентом', documents: 'Документы', quality: 'Служба качества' }
 const roles: Record<Role, string> = { demo: 'Гость', staff: 'Участник', quality: 'Служба качества' }
+const layouts = [
+  { id: 'columns', name: 'Колонки' },
+  { id: 'window', name: 'Окно' },
+  { id: 'focus', name: 'Весь экран' },
+] as const
+
+function findLayout(id: string | null) {
+  return layouts.find((layout) => layout.id === id)
+}
 
 function App() {
+  const [layout, setLayout] = useState(() => findLayout(new URLSearchParams(location.search).get('layout'))?.id ?? 'columns')
   const [session, setSession] = useState<Session | null>(null)
   const [ready, setReady] = useState<boolean | null>(null)
   const [failure, setFailure] = useState('')
@@ -28,6 +39,11 @@ function App() {
   const [workspace, setWorkspace] = useState(0)
   const [login, setLogin] = useState<'staff' | 'quality' | null>(null)
   const [navOpen, setNavOpen] = useState(false)
+  const mainRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    mainRef.current?.scrollTo(0, 0)
+  }, [section, workspace])
 
   useEffect(() => {
     const abort = new AbortController()
@@ -88,24 +104,69 @@ function App() {
     setLogin(null)
   }
 
-  return <div className="app-shell">
+  function changeLayout(id: string) {
+    const next = findLayout(id)
+    if (!next) return
+    const url = new URL(location.href)
+    url.searchParams.set('layout', next.id)
+    window.history.replaceState(window.history.state, '', url)
+    setLayout(next.id)
+    setNavOpen(false)
+  }
+
+  const navigation = <nav className="primary-nav" aria-label="Основная навигация">
+    <button type="button" aria-label={labels.ask} title={labels.ask} aria-current={section === 'ask' ? 'page' : undefined} onClick={() => navigate('ask')}><MessageSquareText size={18} /><span>{labels.ask}</span></button>
+    <button type="button" aria-label={labels.documents} title={labels.documents} aria-current={section === 'documents' ? 'page' : undefined} onClick={() => navigate('documents')}><Files size={18} /><span>{labels.documents}</span></button>
+    <button type="button" aria-label={labels.quality} title={labels.quality} aria-current={section === 'quality' ? 'page' : undefined} onClick={() => navigate('quality')} disabled={!session?.quality_login_available}><ClipboardCheck size={18} /><span>{labels.quality}</span></button>
+  </nav>
+  const brand = <button type="button" className="brand" onClick={startQuestion}>
+    <img src="/agent-mark.png" width="36" height="36" alt="" />
+    <strong>Агент документов</strong>
+  </button>
+  const sidebarLabel = layout === 'focus' ? 'Открыть историю чатов' : 'Открыть меню'
+
+  return <div className="app-shell" data-layout={layout}>
+    <div className="app-background" aria-hidden="true">
+      <span className="scene-curve scene-curve-top" />
+      <span className="scene-curve scene-curve-bottom" />
+    </div>
     {navOpen && <button type="button" className="navigation-scrim" aria-label="Закрыть навигацию" onClick={() => setNavOpen(false)} />}
+    <header className="topbar">
+      <div className="topbar-title">
+        <button type="button" className="icon-button sidebar-toggle" aria-label={sidebarLabel} title={sidebarLabel} aria-controls="app-sidebar" aria-expanded={navOpen} onClick={() => setNavOpen(!navOpen)}>
+          {layout === 'focus' ? <><PanelLeft size={19} /><span>История</span></> : <Menu size={21} />}
+        </button>
+        {layout === 'columns' ? <strong>{labels[section]}</strong> : brand}
+        {layout === 'focus' && <button type="button" className="button topbar-action focus-new-chat" aria-label="Новый чат" title="Новый чат" onClick={startQuestion}><Plus size={18} /><span>Новый чат</span></button>}
+      </div>
+      {layout === 'window' && navigation}
+      <div className="topbar-actions">
+        {ready !== null && <span className={'status-pill ' + (ready ? 'status-ready' : 'status-waiting')}
+          title={ready ? 'Агент доступен' : 'Агент недоступен'}><i /><span>{ready ? 'Агент доступен' : 'Агент недоступен'}</span>
+        </span>}
+        <label className="layout-control">
+          <PanelsTopLeft size={16} aria-hidden="true" />
+          <select aria-label="Компоновка сайта" value={layout} onChange={(event) => changeLayout(event.target.value)}>
+            {layouts.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+          </select>
+          <ChevronDown size={13} aria-hidden="true" />
+        </label>
+        <ThemeToggle />
+        {session?.role === 'demo' && session.staff_login_available && <button type="button" className="button topbar-action topbar-login" aria-label="Войти" title="Войти" onClick={() => setLogin('staff')}>
+          <KeyRound size={16} /><span>Войти</span>
+        </button>}
+      </div>
+    </header>
+
     <aside id="app-sidebar" className={'sidebar' + (navOpen ? ' open' : '')}>
       <div className="sidebar-heading">
-        <button type="button" className="brand" onClick={startQuestion}>
-          <img src="/agent-mark.png" width="38" height="38" alt="" />
-          <strong>Агент документов</strong>
-        </button>
+        {brand}
         <button type="button" className="icon-button sidebar-close" aria-label="Закрыть меню" onClick={() => setNavOpen(false)}>
           <X size={22} />
         </button>
       </div>
       <button type="button" className="new-question" onClick={startQuestion}><Plus size={19} /> Новый чат</button>
-      <nav className="primary-nav" aria-label="Основная навигация">
-        <button type="button" aria-current={section === 'ask' ? 'page' : undefined} onClick={() => navigate('ask')}><MessageSquareText size={18} />{labels.ask}</button>
-        <button type="button" aria-current={section === 'documents' ? 'page' : undefined} onClick={() => navigate('documents')}><Files size={18} />{labels.documents}</button>
-        <button type="button" aria-current={section === 'quality' ? 'page' : undefined} onClick={() => navigate('quality')} disabled={!session?.quality_login_available}><ClipboardCheck size={18} />{labels.quality}</button>
-      </nav>
+      {layout !== 'focus' && navigation}
       {session && <nav className="recent" aria-labelledby="chat-history">
         <h2 id="chat-history"><History size={15} /> История чатов</h2>
         {history.length === 0 && <p>Здесь появятся ваши чаты</p>}
@@ -125,31 +186,15 @@ function App() {
       </footer>}
     </aside>
 
-    <main className="main-shell">
-      <header className="topbar">
-        <div className="topbar-title">
-          <button type="button" className="icon-button mobile-menu" aria-label="Открыть меню" aria-controls="app-sidebar" aria-expanded={navOpen} onClick={() => setNavOpen(!navOpen)}>
-            <Menu size={22} />
-          </button>
-          <strong>{labels[section]}</strong>
-        </div>
-        <div className="topbar-actions">
-          {ready !== null && <span className={'status-pill ' + (ready ? 'status-ready' : 'status-waiting')}><i />
-            {ready ? 'Агент доступен' : 'Агент недоступен'}
-          </span>}
-          <ThemeToggle />
-          {session?.role === 'demo' && session.staff_login_available && <button type="button" className="button topbar-action" onClick={() => setLogin('staff')}>
-            <KeyRound size={16} /> Войти
-          </button>}
-        </div>
-      </header>
+    <main className="main-shell" ref={mainRef}>
       {failure && <p className="alert error app-error" role="alert">{failure}</p>}
       {!session && !failure && <p className="working app-error" role="status"><LoaderCircle size={19} className="spin" /> Открываем рабочую область</p>}
       {session && section === 'ask' && <AskWorkspace key={workspace} session={session} activeId={activeId} onSelect={setActiveId}
-        onLogin={() => setLogin('staff')} onLibrary={() => navigate('documents')} />}
+        onLogin={() => setLogin('staff')} onLibrary={() => navigate('documents')} inlineSources={layout === 'focus'} />}
       {session && section === 'documents' && <Documents key={session.role} />}
       {session?.role === 'quality' && section === 'quality' && <Quality />}
     </main>
+    {layout === 'focus' && <div className="navigation-dock">{navigation}</div>}
     {login && <LoginDialog key={login} role={login} onClose={() => setLogin(null)} onLogin={applySession} />}
   </div>
 }

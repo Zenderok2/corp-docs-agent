@@ -40,12 +40,13 @@ const explanations: Record<string, string> = {
 
 type Interaction = { id: string }
 
-export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }: {
+export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, inlineSources }: {
   session: Session
   activeId: string | null
   onSelect: (id: string) => void
   onLogin: () => void
   onLibrary: () => void
+  inlineSources: boolean
 }) {
   const [draft, setDraft] = useState('')
   const [context, setContext] = useState<Scope>({})
@@ -136,19 +137,87 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
     void send(draft.trim())
   }
 
-  return <div className="ask-layout" data-empty={empty} data-evidence={Boolean(result)}>
+  const error = failure && <p className="alert error" role="alert">{failure}</p>
+  const composer = !session.visible_versions ? (
+    <div className="card no-access">
+      <FileText size={20} />
+      <div><h3>В этом сеансе нет доступных документов</h3>
+        <p>{session.staff_login_available ? 'Войдите с кодом участника, чтобы открыть рабочий корпус.' : 'Корпус появится после импорта.'}</p>
+      </div>
+      {session.staff_login_available && <button className="button primary" onClick={onLogin}>Войти</button>}
+    </div>
+  ) : !sending && !awaiting && !result?.clarification && (
+    <form className="composer card" onSubmit={submit}>
+      <label className="visually-hidden" htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
+      <textarea id="question-box" rows={2} value={draft} placeholder="Например, кто согласует план проекта?" required minLength={4} maxLength={800}
+        aria-keyshortcuts="Control+Enter Meta+Enter"
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && draft.trim().length >= 4) {
+            event.preventDefault()
+            void send(draft.trim())
+          }
+        }}
+      />
+      {expanded && <div className="context-fields">
+        {scopeFields.map(({ key, label }) => <label key={key}>{label}<input type="text" value={context[key] ?? ''} maxLength={160}
+          placeholder={key === 'department' ? 'Можно через точку с запятой' : undefined}
+          onChange={(event) => setContext({ ...context, [key]: event.target.value || null })} /></label>)}
+        <label>Дата применимости<input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} /></label>
+      </div>}
+      <div className="composer-actions">
+        <button type="button" className="button text-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+          <ListFilter size={17} /> Указать контекст <ChevronDown size={14} className={expanded ? 'flipped' : ''} />
+        </button>
+        <div className="composer-submit">
+          <kbd>Ctrl + Enter</kbd>
+          <button type="submit" className="button primary" disabled={draft.trim().length < 4}>
+            Спросить <ArrowUp size={17} />
+          </button>
+        </div>
+      </div>
+    </form>
+  )
+
+  const sources = result && <>
+    {result.citations.length > 0 ? <div className="evidence-list">
+      {result.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
+        <button type="button" className="source-link" onClick={() => setSourceId(citation.id)}>
+          <span className="source-number">{index + 1}</span>
+          <span><strong>{citation.title}</strong><small>{formatLocator(citation.locator)} · {formatRevision(citation)}</small></span>
+          <ArrowRight size={16} className="source-arrow" />
+        </button>
+        <blockquote>{citation.quote}</blockquote>
+        <button type="button" className="button text-button practice-link" onClick={() => setPractice(citation)}>
+          <MessageSquarePlus size={15} /> Добавить пример применения
+        </button>
+      </div>)}
+    </div> : <>
+      <p className="evidence-empty">К этому ответу нет цитат.</p>
+      {session.visible_versions > 0 && <button className="catalog-link" type="button" onClick={onLibrary}>
+        <FolderOpen size={18} />
+        <span><strong>Открыть каталог</strong><small>Доступно редакций · {session.visible_versions}</small></span>
+        <ArrowRight size={16} />
+      </button>}
+    </>}
+    <Trace answer={result} />
+  </>
+
+  return <div className="ask-layout" data-empty={empty}>
     <div className="ask-scenery" aria-hidden="true">
       <div className="ask-scene">
-        <span className="scene-curve scene-curve-top" />
-        <span className="scene-curve scene-curve-bottom" />
         <AgentOrb thinking={thinking} />
       </div>
     </div>
     <section className="ask-main" aria-label="Диалог с агентом">
-      {empty && <header className="welcome">
-        <h1>Поиск по регламентам</h1>
-        <p>Спросите о рабочей ситуации и получите ответ со ссылками на документы.</p>
-      </header>}
+      {empty && <div className="chat-start">
+        <header className="welcome">
+          <h1>Поиск по регламентам</h1>
+          <p>Спросите о рабочей ситуации и получите ответ со ссылками на документы.</p>
+        </header>
+        {error}
+        {composer}
+      </div>}
 
       {pendingQuestion && <div className="conversation">
         <div className="question-bubble"><span className="speaker">Ваш вопрос</span><p>{pendingQuestion}</p></div>
@@ -166,9 +235,17 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
           <p className="alert error" role="alert">{describeError(displayed.result.error_code)}</p>
         )}
         {result && <AnswerPanel answer={result} openSource={setSourceId} />}
-        {Boolean(result?.citations.length) && <a className="mobile-evidence-link" href="#answer-sources">
+        {!inlineSources && Boolean(result?.citations.length) && <a className="evidence-jump" href="#answer-sources">
           <LibraryBig size={17} /> Источники ответа <ArrowRight size={16} />
         </a>}
+        {inlineSources && result && <details className="card evidence-disclosure">
+          <summary>
+            <LibraryBig size={17} /> Источники ответа
+            {result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
+            <ChevronDown className="evidence-chevron" size={16} />
+          </summary>
+          <div className="evidence-disclosure-body">{sources}</div>
+        </details>}
         {result?.clarification && <div className="clarification">
           <div className="clarification-title"><CircleHelp size={19} /><h3>{result.clarification.question}</h3></div>
           {result.clarification.field === 'department' && result.clarification.options.length > 0 ? <div className="department-options">
@@ -214,84 +291,23 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
         <strong>{sending ? 'Отправляем вопрос' : displayed?.status === 'running' ? 'Агент сверяет источники'
           : thinking ? 'Вопрос принят' : 'Открываем чат'}</strong>
       </div>}
-      {failure && <p className="alert error" role="alert">{failure}</p>}
-
-      {!session.visible_versions ? (
-        <div className="card no-access">
-          <FileText size={20} />
-          <div><h3>В этом сеансе нет доступных документов</h3>
-            <p>{session.staff_login_available ? 'Войдите с кодом участника, чтобы открыть рабочий корпус.' : 'Корпус появится после импорта.'}</p>
-          </div>
-          {session.staff_login_available && <button className="button primary" onClick={onLogin}>Войти</button>}
-        </div>
-      ) : !sending && !awaiting && !result?.clarification && (
-        <form className="composer card" onSubmit={submit}>
-          <label className="visually-hidden" htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
-          <textarea id="question-box" rows={2} value={draft} placeholder="Например, кто согласует план проекта?" required minLength={4} maxLength={800}
-            aria-keyshortcuts="Control+Enter Meta+Enter"
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && draft.trim().length >= 4) {
-                event.preventDefault()
-                void send(draft.trim())
-              }
-            }}
-          />
-          {expanded && <div className="context-fields">
-            {scopeFields.map(({ key, label }) => <label key={key}>{label}<input type="text" value={context[key] ?? ''} maxLength={160}
-              placeholder={key === 'department' ? 'Можно через точку с запятой' : undefined}
-              onChange={(event) => setContext({ ...context, [key]: event.target.value || null })} /></label>)}
-            <label>Дата применимости<input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} /></label>
-          </div>}
-          <div className="composer-actions">
-            <button type="button" className="button text-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
-              <ListFilter size={17} /> Указать контекст <ChevronDown size={14} className={expanded ? 'flipped' : ''} />
-            </button>
-            <div className="composer-submit">
-              <kbd>Ctrl + Enter</kbd>
-              <button type="submit" className="button primary" disabled={draft.trim().length < 4}>
-                Спросить <ArrowUp size={17} />
-              </button>
-            </div>
-          </div>
-        </form>
-      )}
-      {empty && session.role === 'demo' && session.visible_versions > 0 && <div className="examples">
-        <h2>Примеры вопросов</h2>
-        <div className="example-grid">
-          {sampleQuestions.map((example) => <button type="button" className="example" key={example.label} onClick={() => {
-            setDraft(example.question)
-            document.getElementById('question-box')?.focus()
-          }}><span>{example.label}</span><ArrowRight size={16} /></button>)}
-        </div>
-      </div>}
+      {!empty && <>{error}{composer}</>}
     </section>
 
-    {result && <aside className="evidence-rail" id="answer-sources" aria-label="Основания ответа">
+    {empty && session.role === 'demo' && session.visible_versions > 0 && <aside className="examples" aria-labelledby="example-questions">
+      <h2 id="example-questions">Примеры вопросов</h2>
+      <div className="example-grid">
+        {sampleQuestions.map((example) => <button type="button" className="example" key={example.label} onClick={() => {
+          setDraft(example.question)
+          document.getElementById('question-box')?.focus()
+        }}><span>{example.label}</span><ArrowRight size={16} /></button>)}
+      </div>
+    </aside>}
+    {!inlineSources && result && <aside className="evidence-rail" id="answer-sources" aria-label="Основания ответа">
       <div className="aside-heading"><div><LibraryBig size={19} /><h2>Источники</h2></div>
         {result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
       </div>
-      {result.citations.length > 0 ? <div className="evidence-list">
-        {result.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
-          <button type="button" className="source-link" onClick={() => setSourceId(citation.id)}>
-            <span className="source-number">{index + 1}</span>
-            <span><strong>{citation.title}</strong><small>{formatLocator(citation.locator)} · {formatRevision(citation)}</small></span>
-            <ArrowRight size={16} className="source-arrow" />
-          </button>
-          <blockquote>{citation.quote}</blockquote>
-          <button type="button" className="button text-button practice-link" onClick={() => setPractice(citation)}>
-            <MessageSquarePlus size={15} /> Добавить пример применения
-          </button>
-        </div>)}
-      </div> : <>
-        <p className="evidence-empty">К этому ответу нет цитат.</p>
-        {session.visible_versions > 0 && <button className="catalog-link" type="button" onClick={onLibrary}>
-          <FolderOpen size={18} />
-          <span><strong>Открыть каталог</strong><small>Доступно редакций · {session.visible_versions}</small></span>
-          <ArrowRight size={16} />
-        </button>}
-      </>}
-      <Trace answer={result} />
+      {sources}
     </aside>}
     {sourceId && <SourceDialog key={sourceId} id={sourceId} onClose={() => setSourceId(null)} />}
     {practice && displayed && <PracticeDialog citation={practice} questionId={displayed.id} onClose={() => setPractice(null)} />}
