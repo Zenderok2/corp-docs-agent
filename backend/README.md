@@ -1,35 +1,8 @@
 # Backend и локальный запуск
 
-Нужны Python 3.12, Node.js и локальные веса. Подготовленную ранее `.venv`
-хранят отдельно. Она относится к предыдущему кейсу.
-
-## Запуск на Windows
-
-В корне проекта создайте отдельную среду и импортируйте вымышленные документы.
-
-```powershell
-py -3.12 -m venv runtime/agent-venv
-.\runtime\agent-venv\Scripts\python.exe -m pip install -r backend/requirements.lock -e './backend[test]'
-$env:APP_STORAGE_ROOT = 'runtime/demo'
-.\runtime\agent-venv\Scripts\corp-docs.exe import data/samples/catalog.json
-```
-
-Запустите локальный llama.cpp chat на `127.0.0.1:8081` с alias `corp-chat`.
-Для проверки совместимости в шаблоне доступны веса Qwen2.5 0.5B. Целевой
-профиль стенда — Qwen3 4B Instruct 2507. Для нескольких объёмных фрагментов
-выделите не менее 6 144 токенов контекста. [Команды и подготовка моделей](../docs/operations/LOCAL_SETUP.md).
-
-В терминале backend запустите API. Чтобы открыть тестовую почту службы качества, задайте
-свой `QUALITY_ACCESS_CODE` в `.env` перед запуском.
-
-```powershell
-$env:APP_STORAGE_ROOT = 'runtime/demo'
-.\runtime\agent-venv\Scripts\python.exe -m uvicorn corp_docs_agent.api.main:app --host 127.0.0.1 --port 8000 --no-access-log
-```
-
-В отдельном терминале из корня выполните `npm --prefix frontend ci` и
-`npm --prefix frontend run dev`. Откройте `http://127.0.0.1:5173`.
-Статус зависимостей возвращает `http://127.0.0.1:8000/health/ready`.
+Backend использует Python 3.12, SQLite и локальную модель. Подготовка
+окружения, загрузка весов и запуск демо-корпуса описаны в инструкциях.
+[Windows](../docs/operations/LOCAL_SETUP.md) · [Docker Compose](../infra/docker/README.md).
 
 ## Импорт рабочего корпуса
 
@@ -62,8 +35,8 @@ $env:APP_STORAGE_ROOT = 'runtime/demo'
 ## Проверки
 
 ```powershell
-.\runtime\agent-venv\Scripts\python.exe -m pytest -q backend/tests
-.\runtime\agent-venv\Scripts\python.exe evals/smoke.py --base-url http://127.0.0.1:8000
+.\runtime\dev-venv\Scripts\python.exe -m pytest -q backend/tests
+.\runtime\dev-venv\Scripts\python.exe evals/smoke.py --base-url http://127.0.0.1:8000
 ```
 
 [Контракт API](../docs/architecture/API.md) · [Контрольные сценарии](../evals/README.md).
