@@ -2,7 +2,7 @@ import { StrictMode, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
-  BookOpen, ChevronRight, ClipboardCheck, Files, History, KeyRound, LoaderCircle, LogOut, Menu,
+  BookOpen, ClipboardCheck, Files, History, KeyRound, LoaderCircle, LogOut, Menu,
   MessageSquareText, Plus, X,
 } from 'lucide-react'
 import { AskWorkspace } from '../features/ask/AskWorkspace'
@@ -15,7 +15,7 @@ import './styles.css'
 
 type Section = 'ask' | 'documents' | 'quality'
 const labels: Record<Section, string> = { ask: 'Вопрос агенту', documents: 'Документы', quality: 'Служба качества' }
-const roles: Record<Role, string> = { demo: 'Демо-режим', staff: 'Участник', quality: 'Служба качества' }
+const roles: Record<Role, string> = { demo: 'Гость', staff: 'Участник', quality: 'Служба качества' }
 
 function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -81,14 +81,15 @@ function App() {
   return <div className="app-shell">
     {navOpen && <button type="button" className="navigation-scrim" aria-label="Закрыть навигацию" onClick={() => setNavOpen(false)} />}
     <aside className={'sidebar' + (navOpen ? ' open' : '')}>
-      <button type="button" className="brand" onClick={startQuestion}><span><BookOpen size={22} strokeWidth={1.7} /></span>
-        <strong>Агент<br />документов</strong>
+      <button type="button" className="brand" onClick={startQuestion}>
+        <span><BookOpen size={21} strokeWidth={1.65} /></span>
+        <strong>Агент документов</strong>
       </button>
-      <button type="button" className="new-question" onClick={startQuestion}><Plus size={19} /> Новый вопрос</button>
+      <button type="button" className="new-question" onClick={startQuestion}><Plus size={17} /> Новый вопрос</button>
       <nav aria-label="Основная навигация">
-        <button type="button" className={section === 'ask' ? 'nav-active' : ''} onClick={() => navigate('ask')}><MessageSquareText size={18} />{labels.ask}</button>
-        <button type="button" className={section === 'documents' ? 'nav-active' : ''} onClick={() => navigate('documents')}><Files size={18} />{labels.documents}</button>
-        <button type="button" className={section === 'quality' ? 'nav-active' : ''} onClick={() => navigate('quality')} disabled={!session?.quality_login_available}><ClipboardCheck size={18} />{labels.quality}</button>
+        <button type="button" aria-current={section === 'ask' ? 'page' : undefined} onClick={() => navigate('ask')}><MessageSquareText size={18} />{labels.ask}</button>
+        <button type="button" aria-current={section === 'documents' ? 'page' : undefined} onClick={() => navigate('documents')}><Files size={18} />{labels.documents}</button>
+        <button type="button" aria-current={section === 'quality' ? 'page' : undefined} onClick={() => navigate('quality')} disabled={!session?.quality_login_available}><ClipboardCheck size={18} />{labels.quality}</button>
       </nav>
       {history.length > 0 && <div className="recent">
         <h2><History size={15} /> Недавние вопросы</h2>
@@ -114,11 +115,11 @@ function App() {
           <button type="button" className="icon-button mobile-menu" aria-label={navOpen ? 'Закрыть меню' : 'Открыть меню'} aria-expanded={navOpen} onClick={() => setNavOpen(!navOpen)}>
             {navOpen ? <X size={22} /> : <Menu size={22} />}
           </button>
-          <span>Рабочая область</span><ChevronRight size={14} /><strong>{labels[section]}</strong>
+          <strong>{labels[section]}</strong>
         </div>
         <div className="topbar-actions">
           {ready !== null && <span className={'status-pill ' + (ready ? 'status-ready' : 'status-waiting')}><i />
-            {ready ? 'Стенд готов' : 'Контур недоступен'}
+            {ready ? 'Агент доступен' : 'Агент недоступен'}
           </span>}
           {session?.role === 'demo' && session.staff_login_available && <button type="button" className="button topbar-login" onClick={() => setLogin('staff')}>
             <KeyRound size={16} /> Войти

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, FileText, FolderOpen, LoaderCircle } from 'lucide-react'
+import { ArrowRight, FileText, LoaderCircle } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, formatRevision, scopeFields } from '../../shared/api'
 import type { Locator, Page, SourceVersion } from '../../shared/api'
 import { Dialog } from '../../shared/Dialog'
@@ -34,9 +34,9 @@ export function Documents() {
   }, [])
 
   return <section className="content-page">
-    <div className="page-heading"><span className="square-icon"><FolderOpen size={22} /></span><div>
-      <h1>Документы</h1><p>Редакции, даты применения и исходные пункты доступного корпуса.</p>
-    </div></div>
+    <header className="page-heading">
+      <h1>Документы</h1><p>Откройте документ, чтобы увидеть его редакцию, даты применения и исходные пункты.</p>
+    </header>
     {failure && <p className="alert error" role="alert">{failure}</p>}
     {loading && !items.length && <p className="working"><LoaderCircle size={18} className="spin" /> Загружаем документы</p>}
     {!loading && !failure && !items.length && <p className="card list-empty">В этом сеансе нет доступных документов.</p>}

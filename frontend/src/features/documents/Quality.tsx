@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Check, ClipboardCheck, CornerUpLeft, FileCheck2, LoaderCircle, Mail } from 'lucide-react'
+import { Check, CornerUpLeft, FileCheck2, LoaderCircle, Mail } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, scopeFields } from '../../shared/api'
 import type { Page, PracticeQueueItem, QualityCase } from '../../shared/api'
 import { SourceDialog } from '../sources/SourceDialog'
@@ -57,9 +57,9 @@ export function Quality() {
   const pending = cases.filter((item) => item.status === 'pending').length
   const reports = practices.filter((item) => item.status === 'pending_review').length
   return <section className="content-page">
-    <div className="page-heading"><span className="square-icon"><ClipboardCheck size={22} /></span><div>
+    <header className="page-heading">
       <h1>Служба качества</h1><p>Отвечайте на письма сотрудников и проверяйте примеры применения регламентов.</p>
-    </div></div>
+    </header>
     <div className="tabs" aria-label="Очереди проверки">
       <button type="button" aria-pressed={tab === 'cases'} onClick={() => setTab('cases')}>Входящие письма <span>{pending}</span></button>
       <button type="button" aria-pressed={tab === 'practices'} onClick={() => setTab('practices')}>Примеры применения <span>{reports}</span></button>

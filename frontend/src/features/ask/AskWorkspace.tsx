@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
-  ArrowRight, ArrowUp, BookOpenCheck, Check, ChevronDown, CircleHelp, ClipboardCheck,
-  FileText, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, ScanText, Search, Sparkles,
+  ArrowRight, ArrowUp, Check, ChevronDown, CircleHelp, ClipboardCheck,
+  FileText, FolderOpen, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, ScanText, Search, Sparkles,
 } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, formatRevision, post, scopeFields } from '../../shared/api'
 import type { Answer, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
@@ -120,11 +120,10 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
 
   return <div className="ask-layout">
     <section className="ask-main" aria-label="Диалог с агентом">
-      {!activeId && <div className="welcome">
-        <div className="welcome-icon"><BookOpenCheck size={30} strokeWidth={1.7} /></div>
-        <h1>Спросите о корпоративном<br className="wide-only" /> процессе</h1>
-        <p>Агент найдёт подходящие положения, покажет точные цитаты и уточнит детали, если ответ зависит от контекста.</p>
-      </div>}
+      {!activeId && <header className="welcome">
+        <h1>Поиск по регламентам</h1>
+        <p>Задайте вопрос о рабочей ситуации. В ответе будут ссылки на пункты, по которым можно сверить формулировку.</p>
+      </header>}
 
       {displayed && <div className="conversation">
         <div className="question-bubble">
@@ -139,6 +138,9 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
           <p className="alert error" role="alert">{describeError(displayed.result.error_code)}</p>
         )}
         {result && <AnswerPanel answer={result} openSource={setSourceId} />}
+        {Boolean(result?.citations.length) && <a className="mobile-evidence-link" href="#answer-sources">
+          <LibraryBig size={17} /> Источники ответа <ArrowRight size={16} />
+        </a>}
         {result?.clarification && <div className="clarification">
           <div className="clarification-title"><CircleHelp size={19} /><h3>{result.clarification.question}</h3></div>
           {result.clarification.field === 'department' && result.clarification.options.length > 0 ? <div className="department-options">
@@ -199,6 +201,7 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
         <form className="composer card" onSubmit={submit}>
           <label htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
           <textarea id="question-box" rows={3} value={draft} placeholder="Например, кто подписывает агентский договор?" required minLength={4} maxLength={800}
+            aria-keyshortcuts="Control+Enter Meta+Enter"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && draft.trim().length >= 4) {
@@ -217,16 +220,19 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
             <button type="button" className="button text-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
               <ListFilter size={17} /> Указать контекст <ChevronDown size={14} className={expanded ? 'flipped' : ''} />
             </button>
-            <button type="submit" className="button primary" disabled={sending || draft.trim().length < 4}>
-              {sending ? 'Отправляем…' : 'Спросить'}<ArrowUp size={17} />
-            </button>
+            <div className="composer-submit">
+              <kbd>Ctrl + Enter</kbd>
+              <button type="submit" className="button primary" disabled={sending || draft.trim().length < 4}>
+                {sending ? 'Отправляем…' : 'Спросить'}<ArrowUp size={17} />
+              </button>
+            </div>
           </div>
         </form>
       )}
       {!activeId && session.role === 'demo' && session.visible_versions > 0 && <div className="examples">
-        <h2>Попробуйте на примерах</h2>
+        <h2>Примеры вопросов</h2>
         <div className="example-grid">
-          {sampleQuestions.map((example) => <button type="button" className="example card" key={example.label} onClick={() => {
+          {sampleQuestions.map((example) => <button type="button" className="example" key={example.label} onClick={() => {
             setDraft(example.question)
             document.getElementById('question-box')?.focus()
           }}><span>{example.label}</span><ArrowRight size={16} /></button>)}
@@ -234,7 +240,7 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
       </div>}
     </section>
 
-    <aside className="evidence-rail" aria-label="Основания ответа">
+    <aside className="evidence-rail" id="answer-sources" aria-label="Основания ответа">
       <div className="aside-heading"><div><LibraryBig size={19} /><h2>Источники</h2></div>
         {result && result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
       </div>
@@ -250,13 +256,17 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
             <MessageSquarePlus size={15} /> Добавить пример применения
           </button>
         </div>)}
-      </div> : <div className="evidence-empty">
-        <div className="evidence-illustration"><ScanText size={31} strokeWidth={1.5} /></div>
-        <p>{result ? 'Цитаты в этом ответе отсутствуют.' : 'Здесь появятся пункты документов, на которые опирается ответ.'}</p>
-        {session.visible_versions > 0 && <button className="button text-button" type="button" onClick={onLibrary}>
-          Открыть документы <ArrowRight size={15} />
+      </div> : <>
+        <div className="evidence-empty">
+          <span className="evidence-illustration"><ScanText size={23} strokeWidth={1.55} /></span>
+          <p>{result ? 'К этому ответу нет цитат.' : 'Здесь появятся цитаты из документов, которые подтверждают ответ.'}</p>
+        </div>
+        {session.visible_versions > 0 && <button className="catalog-link" type="button" onClick={onLibrary}>
+          <FolderOpen size={18} />
+          <span><strong>Открыть каталог</strong><small>Доступно редакций · {session.visible_versions}</small></span>
+          <ArrowRight size={16} />
         </button>}
-      </div>}
+      </>}
       {result && <Trace answer={result} />}
     </aside>
     {sourceId && <SourceDialog key={sourceId} id={sourceId} onClose={() => setSourceId(null)} />}
