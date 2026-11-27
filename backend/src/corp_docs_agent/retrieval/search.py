@@ -15,6 +15,10 @@ VERSION_CANDIDATE_LIMIT = 4
 RUBLE_AMOUNT = r"(?P<sum>\d{1,3}(?:\s\d{3})+|\d+(?:[.,]\d{1,2})?)\s*(?:руб(?:лей|ля|ль|\.)?|₽)(?![а-я])"
 QUESTION_AMOUNT = re.compile(RUBLE_AMOUNT, re.IGNORECASE)
 LIMIT_AMOUNT = re.compile(r"\b(?P<operator>не более|не менее|свыше|до|от)\s+" + RUBLE_AMOUNT, re.IGNORECASE)
+CLAUSE_REFERENCE = re.compile(
+    r"\bп(?:\.\s*|ункт(?:а|е|ом|у|ы|ов)?\s+)(\d{1,3}(?:\.\d{1,3}){0,7})(?!\w|\.\d)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,23 @@ def lexical_ids(conn: sqlite3.Connection, terms: list[str], versions: dict, limi
         LIMIT ?
         """,
         (fts_query(terms), json_dump(list(versions)), limit),
+    )
+    return [row["id"] for row in rows]
+
+
+def referenced_clause_ids(conn: sqlite3.Connection, question: str, versions: dict) -> list[str]:
+    clauses = list(dict.fromkeys(CLAUSE_REFERENCE.findall(question)))[:CANDIDATE_LIMIT]
+    if not clauses or not versions:
+        return []
+    rows = conn.execute(
+        """SELECT c.id FROM blocks b
+           JOIN chunks c ON c.block_id = b.id AND c.start_offset = 0
+           JOIN json_each(?) ref ON ref.value = json_extract(b.locator, '$.clause_number')
+           WHERE b.version_id IN (SELECT value FROM json_each(?))
+           ORDER BY ROW_NUMBER() OVER (PARTITION BY b.version_id, ref.key ORDER BY b.ordinal),
+                    ref.key, b.version_id
+           LIMIT ?""",
+        (json_dump(clauses), json_dump(list(versions)), CANDIDATE_LIMIT),
     )
     return [row["id"] for row in rows]
 
@@ -277,3 +298,20 @@ def topic_supported(question: str, passages: list[str], *, semantic_match: bool 
     terms = {term for term in query_terms(claim_content(question)) if not term.isdecimal()}
     support = terms.intersection({token for passage in passages for token in concepts(passage)})
     return bool(terms) and len(support) >= min(len(terms), max(2, ceil(len(terms) * .5)))
+
+
+def candidates_support(
+    question: str, candidates: list[Candidate], semantic_support: set[str], referenced: set[str],
+) -> bool:
+    if topic_supported(
+        question, [item.topic_text() for item in candidates],
+        semantic_match=any(item.id in semantic_support for item in candidates),
+    ):
+        return True
+    # An explicit clause reference narrows the location. Require additional
+    # subject terms from its text rather than counting the number or scope label.
+    exact_passages = [item.text for item in candidates if item.id in referenced]
+    if not exact_passages:
+        return False
+    terms = {term for term in query_terms(CLAUSE_REFERENCE.sub(" ", question)) if not term.isdecimal()}
+    return any(len(terms.intersection(concepts(text))) >= 2 for text in exact_passages)

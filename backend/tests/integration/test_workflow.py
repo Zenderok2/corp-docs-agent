@@ -185,6 +185,50 @@ def test_complex_project_compares_deadlines_from_confirmed_sources(settings, tmp
             assert citation.json()["quote"] == rules[row["department"]]
 
 
+def test_explicit_clause_retrieval_uses_each_allowed_department(settings, tmp_path):
+    from docx import Document
+
+    rules = {
+        "Дирекция внедрения": "8.4. Работы до договора согласует руководитель проекта.",
+        "Проектное бюро": "8.4. Работы до договора согласует технический директор.",
+    }
+    entries = []
+    for index, (department, rule) in enumerate([*rules.items(), ("Проектное бюро", "8.4. Закрытая редакция.")]):
+        path = tmp_path / f"clause-{index}.docx"
+        document = Document()
+        for number in range(1, 7):
+            document.add_paragraph(f"2.{number}. Комитет согласует начало работ до подписания договора. См. пункт 8.4.")
+        document.add_paragraph(rule)
+        document.save(path)
+        entries.append({
+            "path": path.name, "key": path.stem, "version": "test", "title": path.stem,
+            "kind": "regulations", "status": "published", "scope": {"department": department},
+            "groups": ["staff" if index == len(rules) else "demo"],
+        })
+    manifest = tmp_path / "clauses.json"
+    manifest.write_text(json.dumps({"sources": entries}), encoding="utf-8")
+    assert all(item["status"] == "imported" for item in import_catalog(settings, manifest))
+
+    class ClauseChat(ScriptedChat):
+        def decide(self, data, *, timeout=None):
+            first = data["sources"][0]
+            assert first["clause_number"] == "8.4"
+            assert first["text"] == rules[data["focus_department"]]
+            assert all(source["title"] != "clause-2" for source in data["sources"])
+            return Decision(outcome="answered", evidence=[first["ref"]], clarification=""), {}
+
+    with TestClient(create_app(settings, ClauseChat())) as client:
+        client.get("/api/v1/session")
+        question_id = client.post("/api/v1/questions", json={
+            "question": "В длинном обсуждении сложного комплексного проекта возник вопрос. "
+                        "Кто согласует начало работ до подписания договора по одному и тому же пункту 8.4?",
+            "context": {"departments": list(rules)},
+        }).json()["id"]
+        result = wait_question(client, question_id)["result"]
+        assert result["outcome"] == "answered"
+        assert [citation["quote"] for citation in result["citations"]] == list(rules.values())
+
+
 @pytest.mark.parametrize(
     ("question", "selected_paragraphs", "expected_count"),
     [

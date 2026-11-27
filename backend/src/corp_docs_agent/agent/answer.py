@@ -14,8 +14,9 @@ from corp_docs_agent.persistence.quality_mail import send_request
 from corp_docs_agent.persistence.store import Store, corpus_revision, json_dump, now, visible_versions
 from corp_docs_agent.providers.llama import Chat, ProviderError
 from corp_docs_agent.retrieval.search import (
-    Candidate, amount_applies, eligible_versions, expand_evidence, lexical_ids, load_candidates, load_numbered_clauses,
-    mentioned_departments, rank_ids, search_terms, select_evidence, topic_supported,
+    Candidate, amount_applies, candidates_support, eligible_versions, expand_evidence, lexical_ids, load_candidates,
+    load_numbered_clauses, mentioned_departments, rank_ids, referenced_clause_ids, search_terms, select_evidence,
+    topic_supported,
 )
 from corp_docs_agent.retrieval.terms import glossary_hints, scope_key
 
@@ -165,6 +166,7 @@ class AnswerWorker:
             else:
                 versions, missing = eligible_versions(visible, as_of, context, document_ids)
             lexical = lexical_ids(conn, terms, versions)
+            referenced = referenced_clause_ids(conn, combined, versions)
             anchors = {
                 department: lexical_ids(conn, terms, {
                     key: item for key, item in member_versions.items() if item.metadata["scope"].get("department")
@@ -179,15 +181,18 @@ class AnswerWorker:
         with self.store.connect() as conn:
             if corpus_revision(conn) != revision:
                 raise ProviderError("source_access_changed")
-            primary = load_candidates(conn, rank_ids(lexical, vector_ids), versions, missing)
+            ranked_ids = list(dict.fromkeys(referenced + rank_ids(lexical, vector_ids)))
+            primary = load_candidates(conn, ranked_ids, versions, missing)
             primary = [item for item in primary if amount_applies(combined, item.text)]
             adjacent = expand_evidence(conn, primary, versions, missing, terms)
             adjacent = [item for item in adjacent if amount_applies(combined, item.text)]
-            anchor_candidates = load_candidates(conn, [key for ids in anchors.values() for key in ids], versions, missing)
+            anchor_ids = list(dict.fromkeys(referenced + [key for ids in anchors.values() for key in ids]))
+            anchor_candidates = load_candidates(conn, anchor_ids, versions, missing) if anchors else []
             anchor_candidates = [item for item in anchor_candidates if amount_applies(combined, item.text)]
             first_by_department = {}
             for item in anchor_candidates:
-                first_by_department.setdefault(scope_key(item.version.metadata["scope"]["department"]), item)
+                if department := item.version.metadata["scope"].get("department"):
+                    first_by_department.setdefault(scope_key(department), item)
             ranked = primary + anchor_candidates
             clauses = load_numbered_clauses(conn, ranked + adjacent, versions, missing, combined)
             candidates = select_evidence(ranked, adjacent, list(first_by_department.values()), clauses)
@@ -196,9 +201,11 @@ class AnswerWorker:
             item.id: group[0] for item in candidates
             if (group := clauses.get(item.block_id)) and group[0].id != item.id and group[0].text.rstrip().endswith(":")
         }
+        referenced_set = set(referenced)
         trace = [{
             "step": "retrieval", "lexical_hits": len(lexical), "vector_hits": len(vector_ids),
-            "related_hits": len(adjacent), "candidates": len(candidates), "vector_state": vector_state,
+            "referenced_hits": len(referenced), "related_hits": len(adjacent),
+            "candidates": len(candidates), "vector_state": vector_state,
             "duration_ms": elapsed_ms(started),
         }]
         usage = {"chat_calls": 0, "embedding_calls": 0, **vector_usage}
@@ -223,10 +230,7 @@ class AnswerWorker:
                 evidence.extend((item, item.start, item.start + len(item.text)) for item in items)
             outcome = "needs_clarification"
             clarification = {"question": SCOPE_QUESTIONS[field], "field": field, "options": options}
-        elif candidates and topic_supported(
-            question["question"], [item.topic_text() for item in candidates],
-            semantic_match=any(item.id in semantic_support for item in candidates),
-        ):
+        elif candidates_support(question["question"], candidates, semantic_support, referenced_set):
             model_started = monotonic()
             assessment = {
                 "question": question["question"],
@@ -249,7 +253,7 @@ class AnswerWorker:
             }
             if department_versions:
                 outcome, evidence, clarifier, department_refs = self.assess_departments(
-                    assessment, candidates, department_versions, semantic_support, usage, introductions,
+                    assessment, candidates, department_versions, semantic_support, referenced_set, usage, introductions,
                     started + getattr(self.chat, "timeout", 90.0),
                 )
             else:
@@ -262,10 +266,8 @@ class AnswerWorker:
                         decision.evidence, candidates, introductions if outcome in {"answered", "partial"} else None,
                     )
             trace.append({"step": "assessment", "duration_ms": elapsed_ms(model_started)})
-            if outcome == "answered" and not topic_supported(
-                question["question"],
-                [source.topic_text() for source, _, _ in evidence],
-                semantic_match=any(source.id in semantic_support for source, _, _ in evidence),
+            if outcome == "answered" and not candidates_support(
+                question["question"], [source for source, _, _ in evidence], semantic_support, referenced_set,
             ):
                 outcome, evidence = "not_found", []
             if outcome in {"answered", "partial", "conflict"} and not evidence:
@@ -387,7 +389,7 @@ class AnswerWorker:
 
     def assess_departments(
         self, assessment: dict, candidates: list[Candidate], department_versions: dict,
-        semantic_support: set[str], usage: dict, introductions: dict[str, Candidate], deadline: float,
+        semantic_support: set[str], referenced: set[str], usage: dict, introductions: dict[str, Candidate], deadline: float,
     ) -> tuple[str, list, str, dict[str, list[int]]]:
         outcomes = []
         evidence = []
@@ -400,9 +402,8 @@ class AnswerWorker:
                 (item, source) for item, source in zip(candidates, assessment["sources"], strict=True)
                 if item.version.id in versions
             ][:5]
-            if not topic_supported(
-                assessment["question"], [item.topic_text() for item, _ in scope_matches],
-                semantic_match=any(item.id in semantic_support for item, _ in scope_matches),
+            if not candidates_support(
+                assessment["question"], [item for item, _ in scope_matches], semantic_support, referenced,
             ):
                 outcomes.append("not_found")
                 continue
@@ -428,9 +429,8 @@ class AnswerWorker:
                 continue
             add_chat_usage(usage, call_usage)
             outcome = decision.outcome
-            if outcome == "answered" and not topic_supported(
-                assessment["question"], [item.topic_text() for item, _, _ in selected],
-                semantic_match=any(item.id in semantic_support for item, _, _ in selected),
+            if outcome == "answered" and not candidates_support(
+                assessment["question"], [item for item, _, _ in selected], semantic_support, referenced,
             ):
                 outcome, selected = "not_found", []
             if outcome == "conflict" and len({item.block_id for item, _, _ in selected}) < 2:
