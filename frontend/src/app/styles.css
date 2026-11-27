@@ -214,6 +214,20 @@ textarea:not(.composer > textarea) { resize: vertical; }
 .department-options input { accent-color: var(--green); }
 .department-answers section { display: grid; gap: 8px; padding: 12px 0 0; border-top: 1px solid var(--line); }
 .department-answers h3 { font-size: .94rem; }
+.department-comparison { min-width: 0; overflow-x: auto; }
+.department-comparison table {
+  width: 100%; min-width: 34rem; table-layout: fixed; border-collapse: collapse; font-size: .84rem; line-height: 1.48;
+}
+.department-comparison caption { text-align: left; font-weight: 650; padding-bottom: 9px; }
+.department-comparison :is(th, td) {
+  vertical-align: top; text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); overflow-wrap: break-word;
+}
+.department-comparison thead th { background: #edf6f1; color: #285b4d; }
+.comparison-department { width: 22%; }
+.comparison-timing { width: 35%; }
+.comparison-reference { width: 5.25rem; }
+.comparison-deadline { margin-top: 4px; }
+.department-comparison .comparison-source { white-space: nowrap; font-size: inherit; margin-top: -6px; }
 .pending-box { display: flex; align-items: center; gap: 12px; padding: 15px; border: 1px solid var(--line); background: #fff; border-radius: 12px; }
 .pending-box strong { font-size: .94rem; }
 .pending-box p { font-size: .83rem; line-height: 1.5; color: var(--muted); margin-top: 4px; }

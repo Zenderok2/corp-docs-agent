@@ -7,6 +7,15 @@ from corp_docs_agent.retrieval.terms import WORD, index_text, words
 
 NUMBERS = re.compile(r"\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d+)?")
 CLAUSE_NUMBER = re.compile(r"^(?:\d{1,3}(?:\.\d{1,3})*\.|\d{1,3}\)|•)\s+")
+RELATIVE_OFFSET = re.compile(r"\bза \d", re.IGNORECASE)
+BEFORE_DEADLINE = re.compile(
+    r"(?P<action>[^.!?;]+?) "
+    r"(?P<deadline>(?:не (?:менее|более|позднее|ранее) чем |как (?:минимум|максимум) )?"
+    r"за \d+(?:[.,]\d+)? (?:(?:рабоч|календарн)\w+ )?"
+    r"(?:час(?:а|ов)?|день|дня|дней|недел(?:ю|и|ь)|месяц(?:а|ев)?)) "
+    r"(?P<anchor>до [^.!?;]+)(?:\.(?: (?P<condition>(?:при|если|в случае|иначе)\b [^.!?]+[.!?]?))?)?",
+    re.IGNORECASE,
+)
 CONDITIONS = [re.compile(pattern, re.IGNORECASE) for pattern in (
     r"\bрабоч\w* (?:д[не]\w*|час\w*)\b",
     r"\bкалендарн\w* (?:д[не]\w*|недел\w*)\b",
@@ -42,6 +51,15 @@ def outside_document_qa(question: str) -> bool:
         return False
     return bool((INDIVIDUAL_METRIC.search(text) and SPECIFIC_CASE.search(text))
                 or (EXCHANGE.search(text) and CURRENT.search(text)))
+
+
+def parse_before_deadline(quote: str) -> dict[str, str | None] | None:
+    """Split an explicit deadline before an event while retaining any trailing condition."""
+    text = CLAUSE_NUMBER.sub("", " ".join(quote.split()))
+    match = BEFORE_DEADLINE.fullmatch(text)
+    if match is None or any(RELATIVE_OFFSET.search(match[field]) for field in ("action", "anchor")):
+        return None
+    return match.groupdict()
 
 
 def concise_excerpts(evidence: list[tuple[Candidate, int, int]]) -> list[dict]:

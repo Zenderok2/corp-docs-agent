@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from corp_docs_agent.agent.grounding import parse_before_deadline
 from corp_docs_agent.api.auth import Principal
 from corp_docs_agent.core.settings import Settings
 from corp_docs_agent.persistence.quality_mail import mail_thread
@@ -104,6 +105,27 @@ def published_practices(conn: sqlite3.Connection, citations: list[dict], role: s
     return [dict(row) for row in rows]
 
 
+def department_comparison(departments: list[dict], citations: dict[str, sqlite3.Row]) -> list[dict]:
+    if len(departments) < 2:
+        return []
+    comparison = []
+    for department in departments:
+        deadlines = []
+        for citation_id in department["citation_ids"]:
+            citation = citations[citation_id]
+            quote = citation["text"]
+            if citation["start_offset"] != 0 or citation["end_offset"] != len(quote):
+                continue
+            if json.loads(citation["locator"]).get("column_header"):
+                continue
+            if deadline := parse_before_deadline(quote):
+                deadlines.append({"department": department["name"], "citation_id": citation_id, **deadline})
+        if len(deadlines) != 1:
+            return []
+        comparison.append(deadlines[0])
+    return comparison
+
+
 def encode_question(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     payload = {
         "id": row["id"], "parent_id": row["parent_id"], "status": row["status"], "question": row["question"],
@@ -131,6 +153,9 @@ def encode_question(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         citation_ids = {citation["id"] for citation in citations}
         if any(not citation_ids.issuperset(item["citation_ids"]) for item in result["departments"] + result["findings"]):
             fail(409, "source_access_changed")
+        result["department_comparison"] = (
+            department_comparison(result["departments"], all_citations) if result["outcome"] == "answered" else []
+        )
         result["practices"] = published_practices(conn, citations, row["role"])
         result["quality_answer"] = None
         if quality_id := result.pop("quality_answer_id"):

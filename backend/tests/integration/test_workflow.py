@@ -120,6 +120,71 @@ def test_department_variants_complex_projects_and_glossary(settings, tmp_path):
         assert unresolved["quality_case"]["status"] == "pending"
 
 
+@pytest.mark.parametrize(
+    ("engineering_timing", "has_comparison"),
+    [
+        ("за 10 календарных дней до согласования сметы", True),
+        ("за 10 календарных дней", False),
+        ("за 10 календарных дней до согласования сметы и за 12 календарных дней до начала работ", False),
+    ],
+    ids=["comparison", "missing_anchor", "multiple_deadlines"],
+)
+def test_complex_project_compares_deadlines_from_confirmed_sources(settings, tmp_path, engineering_timing, has_comparison):
+    implementation = "Дирекция внедрения"
+    engineering = "Проектное бюро"
+    condition = "При нарушении срока её возвращают на согласование."
+    rules = {
+        implementation: f"1.2. Заявка направляется не менее чем за 4 рабочих дня до начала работ. {condition}",
+        engineering: f"Расчёт направляется {engineering_timing}.",
+    }
+    sources = []
+    for index, (department, rule) in enumerate(rules.items(), 1):
+        path = tmp_path / f"deadline-{index}.md"
+        path.write_text(rule, encoding="utf-8")
+        sources.append({
+            "path": path.name, "key": path.stem, "version": "test", "title": f"Сроки — {department}",
+            "kind": "regulations", "status": "published", "groups": ["demo"], "scope": {"department": department},
+        })
+    manifest = tmp_path / "deadline-catalog.json"
+    manifest.write_text(json.dumps({"sources": sources}), encoding="utf-8")
+    assert all(item["status"] == "imported" for item in import_catalog(settings, manifest))
+
+    class DeadlineChat(ScriptedChat):
+        def decide(self, data, *, timeout=None):
+            rule = rules[data["focus_department"]]
+            ref = next(source["ref"] for source in data["sources"] if source["text"] == rule)
+            return Decision(outcome="answered", evidence=[ref], clarification=""), {}
+
+    with TestClient(create_app(settings, DeadlineChat())) as client:
+        client.get("/api/v1/session")
+        question_id = client.post("/api/v1/questions", json={
+            "question": "Когда направляется заявка или расчёт?",
+            "context": {"departments": [implementation, engineering]},
+        }).json()["id"]
+        result = wait_question(client, question_id)["result"]
+        assert result["outcome"] == "answered"
+        assert [citation["quote"] for citation in result["citations"]] == list(rules.values())
+        if not has_comparison:
+            assert result["department_comparison"] == []
+            return
+        assert result["department_comparison"] == [
+            {
+                "department": implementation, "action": "Заявка направляется",
+                "deadline": "не менее чем за 4 рабочих дня", "anchor": "до начала работ", "condition": condition,
+                "citation_id": result["departments"][0]["citation_ids"][0],
+            },
+            {
+                "department": engineering, "action": "Расчёт направляется",
+                "deadline": "за 10 календарных дней", "anchor": "до согласования сметы", "condition": None,
+                "citation_id": result["departments"][1]["citation_ids"][0],
+            },
+        ]
+        for row in result["department_comparison"]:
+            citation = client.get(f"/api/v1/citations/{row['citation_id']}")
+            assert citation.status_code == 200
+            assert citation.json()["quote"] == rules[row["department"]]
+
+
 def test_numbered_docx_keeps_the_intro_and_both_estimate_deadlines(settings, tmp_path):
     from docx import Document
 

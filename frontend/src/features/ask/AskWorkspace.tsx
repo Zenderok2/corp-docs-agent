@@ -8,6 +8,7 @@ import { api, describeError, formatDate, formatLocator, formatRevision, post, sc
 import type { Answer, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
 import { MailThread } from '../documents/MailThread'
 import { SourceDialog } from '../sources/SourceDialog'
+import { DepartmentComparison } from './DepartmentComparison'
 import { PracticeDialog } from './PracticeDialog'
 
 const sampleQuestions = [
@@ -265,8 +266,14 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
 
 function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: string) => void }) {
   const positive = answer.outcome === 'answered' || answer.outcome === 'quality_answer'
+  const comparison = answer.department_comparison ?? []
+  const comparedIds = new Set(comparison.map((row) => row.citation_id))
   const groupedIds = new Set(answer.departments.flatMap((department) => department.citation_ids))
   const ungrouped = answer.citations.filter((citation) => !groupedIds.has(citation.id))
+  const departmentAnswers = answer.departments.map(({ name, citation_ids }) => ({
+    name,
+    citations: answer.citations.filter(({ id }) => citation_ids.includes(id) && !comparedIds.has(id)),
+  })).filter(({ citations }) => comparison.length === 0 || citations.length > 0)
   function evidenceLines(citations: Citation[]) {
     if (!citations.length) return null
     const available = new Set(citations.map((citation) => citation.id))
@@ -296,12 +303,15 @@ function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: 
     </div>
     {explanations[answer.message_code] && <p className="answer-explanation">{explanations[answer.message_code]}</p>}
     {answer.corpus_changed && <p className="alert neutral">После ответа корпус обновился. Проверьте актуальность новым вопросом.</p>}
-    {answer.outcome === 'answered' && <p className="answer-explanation">{answer.findings.length ? 'Краткий ответ' : 'Выдержки из источников'}</p>}
-    {answer.departments.length > 0 && <div className="department-answers">
+    {answer.outcome === 'answered' && comparison.length === 0 && <p className="answer-explanation">
+      {answer.findings.length ? 'Краткий ответ' : 'Выдержки из источников'}
+    </p>}
+    {comparison.length > 0 && <DepartmentComparison rows={comparison} citations={answer.citations} openSource={openSource} />}
+    {departmentAnswers.length > 0 && <div className="department-answers">
       {answer.clarification?.field === 'department' && <p className="answer-explanation">Найдены возможные положения для разных подразделений.</p>}
-      {answer.departments.map(({ name, citation_ids }) => <section key={name}>
+      {departmentAnswers.map(({ name, citations }) => <section key={name}>
         <h3>{name}</h3>
-        {evidenceLines(answer.citations.filter((citation) => citation_ids.includes(citation.id))) ?? <p>Подтверждённые положения не найдены.</p>}
+        {evidenceLines(citations) ?? <p>Подтверждённые положения не найдены.</p>}
       </section>)}
     </div>}
     {evidenceLines(ungrouped)}

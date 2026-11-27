@@ -73,12 +73,22 @@ export type QualityMail = {
   sent_at: string
 }
 
+export type DepartmentComparisonRow = {
+  department: string
+  action: string
+  deadline: string
+  anchor: string
+  condition: string | null
+  citation_id: string
+}
+
 export type Answer = {
   outcome: Outcome
   message_code: string
   as_of: string
   citations: Citation[]
   departments: Array<{ name: string; citation_ids: string[] }>
+  department_comparison?: DepartmentComparisonRow[]
   findings: Array<{ text: string; citation_ids: string[] }>
   corpus_changed: boolean
   clarification: { question: string; field: ScopeKey | null; options: string[] } | null
