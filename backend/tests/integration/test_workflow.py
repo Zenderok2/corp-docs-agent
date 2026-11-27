@@ -13,7 +13,7 @@ from corp_docs_agent.api.main import create_app
 from corp_docs_agent.core.settings import Settings
 from corp_docs_agent.ingestion.catalog import import_catalog
 from corp_docs_agent.persistence.store import Store, visible_versions
-from corp_docs_agent.providers.llama import Coverage, Decision, Finding, Findings, Verification
+from corp_docs_agent.providers.llama import Coverage, Decision, Finding, Findings, TableCoverage, Verification
 from corp_docs_agent.retrieval.search import eligible_versions, lexical_ids
 from corp_docs_agent.retrieval.terms import query_terms
 
@@ -247,6 +247,70 @@ def test_partial_answer_uses_selected_evidence_for_coverage_review(settings, com
         question_id = client.post("/api/v1/questions", json={"question": LICENSE_QUESTION}).json()["id"]
         result = wait_question(client, question_id)["result"]
         assert result["outcome"] == ("answered" if complete else "partial")
+        assert bool(result["quality_case"]) is not complete
+        assert result["usage"]["chat_calls"] == 2
+
+
+@pytest.mark.parametrize("review", ["both_cells", "omitted_cell", "invalid_reference"])
+def test_partial_table_answer_reviews_and_validates_relevant_cells(settings, tmp_path, review):
+    from docx import Document
+    from docx.oxml import OxmlElement
+
+    required = "Итоговое технико-коммерческое предложение (ТКП) или конкурсная заявка."
+    optional = "Конкурсное техническое задание (ТЗ)."
+    document = Document()
+    document.add_paragraph("1. Содержание карточки проекта")
+    document.add_paragraph("1.1. В карточку включают документы из перечня.")
+    table = document.add_table(rows=2, cols=2)
+    table.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+    table.cell(0, 0).text = "Обязательно"
+    table.cell(0, 1).text = "При наличии"
+    table.cell(1, 0).text = required
+    table.cell(1, 1).text = optional
+    other = document.add_table(rows=2, cols=1)
+    other.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
+    other.cell(0, 0).text = "Данные по согласованию"
+    other.cell(1, 0).text = "ТКП и ТЗ передают на экспертизу проекта."
+    path = tmp_path / "project-card.docx"
+    document.save(path)
+    manifest = tmp_path / "table-catalog.json"
+    manifest.write_text(json.dumps({"sources": [{
+        "path": path.name, "key": "project-card", "version": "test", "title": "Порядок открытия проекта",
+        "kind": "regulations", "status": "published", "groups": ["demo"],
+    }]}), encoding="utf-8")
+    assert import_catalog(settings, manifest)[0]["status"] == "imported"
+
+    class TableChat(ScriptedChat):
+        def decide(self, data):
+            ref = next(source["ref"] for source in data["sources"] if source["text"] == required)
+            return Decision(outcome="partial", evidence=[ref], clarification=""), {}
+
+        def check_table_coverage(self, data, timeout):
+            assert {cell["text"]: cell["column_header"] for cell in data["cells"]} == {
+                required: "Обязательно", optional: "При наличии",
+            }
+            assert 12 < timeout <= 30
+            refs = {cell["text"]: cell["ref"] for cell in data["cells"]}
+            evidence = [refs[required]]
+            if review == "both_cells":
+                evidence.append(refs[optional])
+            elif review == "invalid_reference":
+                evidence.append(len(refs) + 1)
+            return TableCoverage(complete=True, evidence=evidence), {}
+
+    with TestClient(create_app(settings, TableChat())) as client:
+        client.get("/api/v1/session")
+        question_id = client.post("/api/v1/questions", json={
+            "question": "Обязательны ли ТКП и ТЗ в карточке проекта?",
+            "document_ids": ["project-card"],
+        }).json()["id"]
+        result = wait_question(client, question_id)["result"]
+        complete = review == "both_cells"
+        assert result["outcome"] == ("answered" if complete else "partial")
+        expected = [("Обязательно", required)]
+        if complete:
+            expected.append(("При наличии", optional))
+        assert [(item["locator"]["column_header"], item["quote"]) for item in result["citations"]] == expected
         assert bool(result["quality_case"]) is not complete
         assert result["usage"]["chat_calls"] == 2
 

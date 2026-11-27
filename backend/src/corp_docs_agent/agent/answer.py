@@ -6,10 +6,12 @@ from threading import Event
 from time import monotonic
 from uuid import uuid4
 
-from corp_docs_agent.agent.grounding import concise_excerpts, outside_document_qa, verification_input
+from corp_docs_agent.agent.grounding import (
+    concise_excerpts, outside_document_qa, table_abbreviations_covered, verification_input,
+)
 from corp_docs_agent.persistence.quality_mail import send_request
 from corp_docs_agent.persistence.store import Store, corpus_revision, json_dump, now, visible_versions
-from corp_docs_agent.providers.llama import Chat, Decision, ProviderError
+from corp_docs_agent.providers.llama import Chat, ProviderError
 from corp_docs_agent.retrieval.search import (
     Candidate, amount_applies, eligible_versions, expand_evidence, lexical_ids, load_candidates, load_numbered_clauses,
     mentioned_departments, rank_ids, search_terms, select_evidence, topic_supported,
@@ -44,9 +46,9 @@ def add_chat_usage(usage: dict, call_usage: dict) -> None:
             usage[key] = usage.get(key, 0) + call_usage[key]
 
 
-def locate_evidence(decision: Decision, sources: list[Candidate]) -> list[tuple[Candidate, int, int]]:
+def locate_evidence(refs: list[int], sources: list[Candidate]) -> list[tuple[Candidate, int, int]]:
     located = []
-    for ref in dict.fromkeys(decision.evidence):
+    for ref in dict.fromkeys(refs):
         if not 1 <= ref <= len(sources):
             raise ProviderError("unverified_evidence")
         source = sources[ref - 1]
@@ -267,7 +269,7 @@ class AnswerWorker:
                 outcome, clarifier = decision.outcome, decision.clarification
                 review_partial = outcome == "partial"
                 if outcome != "not_found":
-                    evidence = locate_evidence(decision, candidates)
+                    evidence = locate_evidence(decision.evidence, candidates)
             trace.append({"step": "assessment", "duration_ms": elapsed_ms(model_started)})
             if outcome == "answered" and not topic_supported(
                 question["question"],
@@ -304,10 +306,12 @@ class AnswerWorker:
             message_code = outcome
         findings = []
         verification_started = monotonic()
-        if message_code == "partial" and review_partial and self.confirm_coverage(
-            question["question"], context, evidence, usage, started + getattr(self.chat, "timeout", 90.0),
-        ):
-            outcome = message_code = "answered"
+        if message_code == "partial" and review_partial:
+            deadline = started + getattr(self.chat, "timeout", 90.0)
+            confirmed = self.confirm_coverage(question["question"], context, evidence, candidates, usage, deadline)
+            if confirmed:
+                evidence = confirmed
+                outcome = message_code = "answered"
         if message_code in {"answered", "partial", "conflict"}:
             findings = concise_excerpts(evidence)
             if evidence and not findings and not any(source.locator.get("column_header") for source, _, _ in evidence):
@@ -324,25 +328,71 @@ class AnswerWorker:
             "finding_refs": findings,
         }, evidence
 
-    def confirm_coverage(self, question: str, context: dict, evidence: list, usage: dict, deadline: float) -> bool:
+    def confirm_coverage(
+        self, question: str, context: dict, evidence: list[tuple[Candidate, int, int]],
+        candidates: list[Candidate], usage: dict, deadline: float,
+    ) -> list[tuple[Candidate, int, int]] | None:
         remaining = deadline - monotonic()
-        if remaining < 3 or not evidence or not hasattr(self.chat, "check_coverage"):
-            return False
+        if remaining < 3 or not evidence:
+            return None
         sources = [source for source, _, _ in evidence]
         if any(source.missing_scope for source in sources) or not topic_supported(question, [item.topic_text() for item in sources]):
-            return False
+            return None
+        timeout = min(COVERAGE_BUDGET_SECONDS, remaining)
+        if any(source.locator.get("column_header") for source in sources):
+            return self.confirm_table_coverage(question, context, sources, candidates, usage, timeout)
+        if not hasattr(self.chat, "check_coverage"):
+            return None
         checks = {
             "question": question, "context": context,
             "citations": [{"text": source.text, "column_header": source.locator.get("column_header"),
                            "scope": source.version.metadata["scope"]} for source in sources],
         }
         try:
-            coverage, call_usage = self.chat.check_coverage(checks, min(COVERAGE_BUDGET_SECONDS, remaining))
+            coverage, call_usage = self.chat.check_coverage(checks, timeout)
         except ProviderError:
             add_chat_usage(usage, {})
-            return False
+            return None
         add_chat_usage(usage, call_usage)
-        return coverage.complete
+        return evidence if coverage.complete else None
+
+    def confirm_table_coverage(
+        self, question: str, context: dict, sources: list[Candidate], candidates: list[Candidate],
+        usage: dict, timeout: float,
+    ) -> list[tuple[Candidate, int, int]] | None:
+        anchor = sources[0]
+        path = anchor.locator.get("table_path")
+        if not path or not hasattr(self.chat, "check_table_coverage"):
+            return None
+        cells = [
+            item for item in candidates
+            if item.version.id == anchor.version.id and item.locator.get("column_header")
+            and item.locator.get("table_path", [])[:-1] == path[:-1]
+        ]
+        original_ids = {source.id for source in sources}
+        if not original_ids.issubset(item.id for item in cells):
+            return None
+        checks = {
+            "question": question, "context": context,
+            "cells": [{"ref": ref, "text": item.text, "column_header": item.locator["column_header"]}
+                      for ref, item in enumerate(cells, 1)],
+        }
+        try:
+            coverage, call_usage = self.chat.check_table_coverage(checks, timeout)
+        except ProviderError:
+            add_chat_usage(usage, {})
+            return None
+        add_chat_usage(usage, call_usage)
+        if not coverage.complete:
+            return None
+        try:
+            reviewed = locate_evidence(coverage.evidence, cells)
+        except ProviderError:
+            return None
+        selected = [item for item, _, _ in reviewed]
+        if not original_ids.issubset(item.id for item in selected):
+            return None
+        return reviewed if table_abbreviations_covered(question, cells, selected) else None
 
     def assess_departments(
         self, assessment: dict, candidates: list[Candidate], department_versions: dict,
@@ -377,7 +427,7 @@ class AnswerWorker:
                     "sources": [{**source, "ref": ref} for ref, (_, source) in enumerate(scope_matches, 1)],
                 }, timeout=remaining / (len(department_versions) - number))
                 selected = ([] if decision.outcome == "not_found"
-                            else locate_evidence(decision, [item for item, _ in scope_matches]))
+                            else locate_evidence(decision.evidence, [item for item, _ in scope_matches]))
             except ProviderError as error:
                 add_chat_usage(usage, {})
                 failure = error

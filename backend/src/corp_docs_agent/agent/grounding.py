@@ -2,7 +2,7 @@ import re
 
 from corp_docs_agent.providers.llama import Finding
 from corp_docs_agent.retrieval.search import Candidate
-from corp_docs_agent.retrieval.terms import index_text
+from corp_docs_agent.retrieval.terms import WORD, index_text, words
 
 
 NUMBERS = re.compile(r"\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d+)?")
@@ -55,6 +55,15 @@ def concise_excerpts(evidence: list[tuple[Candidate, int, int]]) -> list[dict]:
             return []
         excerpts.append({"text": text, "refs": [index]})
     return excerpts
+
+
+def table_abbreviations_covered(question: str, cells: list[Candidate], selected: list[Candidate]) -> bool:
+    abbreviations = {
+        token.casefold() for cell in cells for token in WORD.findall(cell.text)
+        if len(token) > 1 and token.isupper()
+    }
+    requested = set(words(question)) & abbreviations
+    return requested.issubset(words(" ".join(cell.text for cell in selected)))
 
 
 def verification_input(
