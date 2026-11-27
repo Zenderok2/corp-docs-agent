@@ -11,6 +11,7 @@ import { Quality } from '../features/documents/Quality'
 import { api, describeError, post } from '../shared/api'
 import type { Page, QuestionSummary, Role, Session } from '../shared/api'
 import { Dialog } from '../shared/Dialog'
+import { ThemeToggle } from './ThemeToggle'
 import './styles.css'
 
 type Section = 'ask' | 'documents' | 'quality'
@@ -121,7 +122,8 @@ function App() {
           {ready !== null && <span className={'status-pill ' + (ready ? 'status-ready' : 'status-waiting')}><i />
             {ready ? 'Агент доступен' : 'Агент недоступен'}
           </span>}
-          {session?.role === 'demo' && session.staff_login_available && <button type="button" className="button topbar-login" onClick={() => setLogin('staff')}>
+          <ThemeToggle />
+          {session?.role === 'demo' && session.staff_login_available && <button type="button" className="button topbar-action" onClick={() => setLogin('staff')}>
             <KeyRound size={16} /> Войти
           </button>}
         </div>
