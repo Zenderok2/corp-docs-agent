@@ -4,7 +4,7 @@
 
 [Открыть стенд](https://d5d4n1iop8aguhgmqkkj.p8361f8z.apigw.yandexcloud.net/) ·
 [Макет интерфейса](docs/product/INTERFACE.md) ·
-[Калькулятор стоимости запроса](https://raw.githubusercontent.com/Zenderok2/corp-docs-agent/6384ebd888d219b2da7ecd220c475986a11fff97/submission/economics.xlsx)
+[Калькулятор стоимости запроса](https://raw.githubusercontent.com/Zenderok2/corp-docs-agent/fcc064368066ba1ac6cd1dee9bffdfa65db3d13d/submission/economics.xlsx)
 
 Сотрудник задаёт вопрос о рабочем процессе, получает краткие тезисы со ссылками
 на точные выдержки и при необходимости уточняет контекст. Если в регламентах есть
@@ -72,7 +72,7 @@ docker compose up -d
 | Интерфейс | React, TypeScript, Vite |
 | Очередь и API | FastAPI, Python 3.12, сохраняемые задания SQLite |
 | Импорт | PyMuPDF для PDF, python-docx для DOCX; также UTF-8 TXT и Markdown |
-| Поиск | FTS5 с русской морфологией и глоссарием, связи документов, соседние пункты и дополнительный индекс ChromaDB |
+| Поиск | FTS5 с русской морфологией и глоссарием, поиск по номеру пункта, связи документов и дополнительный индекс ChromaDB |
 | Модели | Раздельные серверы llama.cpp для chat и embeddings |
 
 SQLite хранит документы, текстовые блоки, историю, разрешения и практику.
@@ -85,6 +85,7 @@ SQLite хранит документы, текстовые блоки, исто�
 | [Бриф](docs/product/BRIEF.md) | Обязательные сценарии и вводные заказчика |
 | [Реализованный API](docs/architecture/API.md) | Вопросы, цитаты, роли, публикации и практика |
 | [Контрольные проверки](evals/README.md) | Проверки без модели и прогон с локальными провайдерами |
+| [Результаты сложных вопросов](docs/quality/RELEASE_2026_11_27.md#проверка-сложных-вопросов-после-доработки) | Сравнение версий на регламентах задачи и ограничения |
 | [Регламент](docs/preparation/HACKATHON.md) | Сроки и материалы сдачи |
 | [Экономика](docs/operations/ECONOMICS.md) | Методика расчёта одного запроса |
 
