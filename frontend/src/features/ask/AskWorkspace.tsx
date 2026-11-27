@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   ArrowRight, ArrowUp, Check, ChevronDown, CircleHelp, ClipboardCheck,
-  FileText, FolderOpen, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, ScanText, Search, Sparkles,
+  FileText, FolderOpen, LibraryBig, ListFilter, MessageSquarePlus, Search, Sparkles,
 } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, formatRevision, post, scopeFields } from '../../shared/api'
 import type { Answer, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
 import { MailThread } from '../documents/MailThread'
 import { SourceDialog } from '../sources/SourceDialog'
+import { AgentOrb } from './AgentOrb'
 import { DepartmentComparison } from './DepartmentComparison'
 import { PracticeDialog } from './PracticeDialog'
 
@@ -53,10 +54,13 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
   const [current, setCurrent] = useState<Question | null>(null)
   const [followUp, setFollowUp] = useState('')
   const [departmentSelection, setDepartmentSelection] = useState<{ id: string; names: string[] } | null>(null)
-  const [sending, setSending] = useState(false)
+  const [submitted, setSubmitted] = useState<{ id: string | null; question: string } | null>(null)
   const [failure, setFailure] = useState('')
   const [sourceId, setSourceId] = useState<string | null>(null)
   const [practice, setPractice] = useState<Citation | null>(null)
+  const requestInFlight = useRef<AbortController | null>(null)
+
+  useEffect(() => () => requestInFlight.current?.abort(), [])
 
   useEffect(() => {
     if (!activeId) return
@@ -87,12 +91,18 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
   const displayed = current?.id === activeId ? current : null
   const result = displayed?.result && 'outcome' in displayed.result ? displayed.result : null
   const awaiting = Boolean(activeId && !failure && (!displayed || ['queued', 'running'].includes(displayed.status)))
+  const sending = submitted?.id === null
+  const empty = !activeId && !sending
+  const thinking = sending || (awaiting && (displayed !== null || submitted?.id === activeId))
+  const pendingQuestion = !displayed && (sending || submitted?.id === activeId) ? submitted?.question : null
   const selectedDepartments = departmentSelection?.id === activeId ? departmentSelection?.names ?? [] : []
 
   async function send(question: string, parent?: string, detail?: QuestionContext) {
-    if (!question.trim() || sending || !session.visible_versions) return
+    if (!question.trim() || requestInFlight.current || !session.visible_versions) return
+    const abort = new AbortController()
+    requestInFlight.current = abort
     setFailure('')
-    setSending(true)
+    setSubmitted({ id: null, question })
     try {
       const path = parent ? '/questions/' + parent + '/follow-ups' : '/questions'
       const departmentNames = context.department?.split(';').map((value) => value.trim()).filter(Boolean) ?? []
@@ -104,15 +114,20 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
       // getRandomValues also works when the LAN preview is served over HTTP.
       const randomBytes = crypto.getRandomValues(new Uint8Array(16))
       const requestKey = Array.from(randomBytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
-      const response = await post<Interaction>(path, request, requestKey)
+      const response = await post<Interaction>(path, request, requestKey, abort.signal)
+      if (abort.signal.aborted) return
       setDraft('')
       setFollowUp('')
       setDepartmentSelection(null)
+      setSubmitted({ id: response.id, question })
       onSelect(response.id)
     } catch (error) {
-      setFailure(describeError(error))
+      if (!abort.signal.aborted) {
+        setSubmitted(null)
+        setFailure(describeError(error))
+      }
     } finally {
-      setSending(false)
+      requestInFlight.current = null
     }
   }
 
@@ -121,13 +136,23 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
     void send(draft.trim())
   }
 
-  return <div className="ask-layout">
+  return <div className="ask-layout" data-empty={empty} data-evidence={Boolean(result)}>
+    <div className="ask-scenery" aria-hidden="true">
+      <div className="ask-scene">
+        <span className="scene-curve scene-curve-top" />
+        <span className="scene-curve scene-curve-bottom" />
+        <AgentOrb thinking={thinking} />
+      </div>
+    </div>
     <section className="ask-main" aria-label="Диалог с агентом">
-      {!activeId && <header className="welcome">
+      {empty && <header className="welcome">
         <h1>Поиск по регламентам</h1>
-        <p>Задайте вопрос о рабочей ситуации. В ответе будут ссылки на пункты, по которым можно сверить формулировку.</p>
+        <p>Спросите о рабочей ситуации и получите ответ со ссылками на документы.</p>
       </header>}
 
+      {pendingQuestion && <div className="conversation">
+        <div className="question-bubble"><span className="speaker">Ваш вопрос</span><p>{pendingQuestion}</p></div>
+      </div>}
       {displayed && <div className="conversation">
         <div className="question-bubble">
           <span className="speaker">Ваш вопрос</span>
@@ -184,11 +209,10 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
         </div>}
       </div>}
 
-      {awaiting && <div className="pending-box" role="status">
-        <span className="square-icon"><LoaderCircle className="spin" size={19} /></span>
-        <div><strong>{displayed?.status === 'running' ? 'Агент сверяет источники' : 'Вопрос принят'}</strong>
-          <p>{displayed?.status === 'running' ? 'Ищем основания и проверяем цитаты.' : 'Вопрос появится здесь, когда начнётся обработка.'}</p>
-        </div>
+      {(awaiting || sending) && <div className="pending-box" role="status">
+        <img src="/agent-mark.png" width="28" height="28" alt="" />
+        <strong>{sending ? 'Отправляем вопрос' : displayed?.status === 'running' ? 'Агент сверяет источники'
+          : thinking ? 'Вопрос принят' : 'Открываем чат'}</strong>
       </div>}
       {failure && <p className="alert error" role="alert">{failure}</p>}
 
@@ -200,10 +224,10 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
           </div>
           {session.staff_login_available && <button className="button primary" onClick={onLogin}>Войти</button>}
         </div>
-      ) : !awaiting && !result?.clarification && (
+      ) : !sending && !awaiting && !result?.clarification && (
         <form className="composer card" onSubmit={submit}>
-          <label htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
-          <textarea id="question-box" rows={3} value={draft} placeholder="Например, кто подписывает агентский договор?" required minLength={4} maxLength={800}
+          <label className="visually-hidden" htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
+          <textarea id="question-box" rows={2} value={draft} placeholder="Например, кто согласует план проекта?" required minLength={4} maxLength={800}
             aria-keyshortcuts="Control+Enter Meta+Enter"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -225,14 +249,14 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
             </button>
             <div className="composer-submit">
               <kbd>Ctrl + Enter</kbd>
-              <button type="submit" className="button primary" disabled={sending || draft.trim().length < 4}>
-                {sending ? 'Отправляем…' : 'Спросить'}<ArrowUp size={17} />
+              <button type="submit" className="button primary" disabled={draft.trim().length < 4}>
+                Спросить <ArrowUp size={17} />
               </button>
             </div>
           </div>
         </form>
       )}
-      {!activeId && session.role === 'demo' && session.visible_versions > 0 && <div className="examples">
+      {empty && session.role === 'demo' && session.visible_versions > 0 && <div className="examples">
         <h2>Примеры вопросов</h2>
         <div className="example-grid">
           {sampleQuestions.map((example) => <button type="button" className="example" key={example.label} onClick={() => {
@@ -243,11 +267,11 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
       </div>}
     </section>
 
-    <aside className="evidence-rail" id="answer-sources" aria-label="Основания ответа">
+    {result && <aside className="evidence-rail" id="answer-sources" aria-label="Основания ответа">
       <div className="aside-heading"><div><LibraryBig size={19} /><h2>Источники</h2></div>
-        {result && result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
+        {result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
       </div>
-      {result && result.citations.length > 0 ? <div className="evidence-list">
+      {result.citations.length > 0 ? <div className="evidence-list">
         {result.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
           <button type="button" className="source-link" onClick={() => setSourceId(citation.id)}>
             <span className="source-number">{index + 1}</span>
@@ -260,18 +284,15 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
           </button>
         </div>)}
       </div> : <>
-        <div className="evidence-empty">
-          <span className="evidence-illustration"><ScanText size={23} strokeWidth={1.55} /></span>
-          <p>{result ? 'К этому ответу нет цитат.' : 'Здесь появятся цитаты из документов, которые подтверждают ответ.'}</p>
-        </div>
+        <p className="evidence-empty">К этому ответу нет цитат.</p>
         {session.visible_versions > 0 && <button className="catalog-link" type="button" onClick={onLibrary}>
           <FolderOpen size={18} />
           <span><strong>Открыть каталог</strong><small>Доступно редакций · {session.visible_versions}</small></span>
           <ArrowRight size={16} />
         </button>}
       </>}
-      {result && <Trace answer={result} />}
-    </aside>
+      <Trace answer={result} />
+    </aside>}
     {sourceId && <SourceDialog key={sourceId} id={sourceId} onClose={() => setSourceId(null)} />}
     {practice && displayed && <PracticeDialog citation={practice} questionId={displayed.id} onClose={() => setPractice(null)} />}
   </div>

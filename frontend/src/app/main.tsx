@@ -2,8 +2,8 @@ import { StrictMode, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
-  BookOpen, ClipboardCheck, Files, History, KeyRound, LoaderCircle, LogOut, Menu,
-  MessageSquareText, Plus, X,
+  ClipboardCheck, Files, History, KeyRound, LoaderCircle, LogOut, Menu,
+  MessageCircle, MessageSquareText, Plus, UserRound, X,
 } from 'lucide-react'
 import { AskWorkspace } from '../features/ask/AskWorkspace'
 import { Documents } from '../features/documents/Documents'
@@ -15,7 +15,7 @@ import { ThemeToggle } from './ThemeToggle'
 import './styles.css'
 
 type Section = 'ask' | 'documents' | 'quality'
-const labels: Record<Section, string> = { ask: 'Вопрос агенту', documents: 'Документы', quality: 'Служба качества' }
+const labels: Record<Section, string> = { ask: 'Чат с агентом', documents: 'Документы', quality: 'Служба качества' }
 const roles: Record<Role, string> = { demo: 'Гость', staff: 'Участник', quality: 'Служба качества' }
 
 function App() {
@@ -53,6 +53,15 @@ function App() {
     return () => abort.abort()
   }, [session, activeId])
 
+  useEffect(() => {
+    if (!navOpen) return
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setNavOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [navOpen])
+
   function navigate(next: Section) {
     if (next === 'quality' && session?.role !== 'quality') {
       setLogin('quality')
@@ -84,31 +93,32 @@ function App() {
     <aside id="app-sidebar" className={'sidebar' + (navOpen ? ' open' : '')}>
       <div className="sidebar-heading">
         <button type="button" className="brand" onClick={startQuestion}>
-          <span><BookOpen size={21} strokeWidth={1.65} /></span>
+          <img src="/agent-mark.png" width="38" height="38" alt="" />
           <strong>Агент документов</strong>
         </button>
         <button type="button" className="icon-button sidebar-close" aria-label="Закрыть меню" onClick={() => setNavOpen(false)}>
           <X size={22} />
         </button>
       </div>
-      <button type="button" className="new-question" onClick={startQuestion}><Plus size={17} /> Новый вопрос</button>
-      <nav aria-label="Основная навигация">
+      <button type="button" className="new-question" onClick={startQuestion}><Plus size={19} /> Новый чат</button>
+      <nav className="primary-nav" aria-label="Основная навигация">
         <button type="button" aria-current={section === 'ask' ? 'page' : undefined} onClick={() => navigate('ask')}><MessageSquareText size={18} />{labels.ask}</button>
         <button type="button" aria-current={section === 'documents' ? 'page' : undefined} onClick={() => navigate('documents')}><Files size={18} />{labels.documents}</button>
         <button type="button" aria-current={section === 'quality' ? 'page' : undefined} onClick={() => navigate('quality')} disabled={!session?.quality_login_available}><ClipboardCheck size={18} />{labels.quality}</button>
       </nav>
-      {history.length > 0 && <div className="recent">
-        <h2><History size={15} /> Недавние вопросы</h2>
-        {history.map((item) => <button type="button" key={item.id} className={activeId === item.id && section === 'ask' ? 'recent-active' : ''}
+      {session && <nav className="recent" aria-labelledby="chat-history">
+        <h2 id="chat-history"><History size={15} /> История чатов</h2>
+        {history.length === 0 && <p>Здесь появятся ваши чаты</p>}
+        {history.map((item) => <button type="button" key={item.id} aria-current={activeId === item.id && section === 'ask' ? 'true' : undefined}
           onClick={() => {
             setActiveId(item.id)
             setSection('ask')
             setWorkspace((version) => version + 1)
             setNavOpen(false)
-          }} title={item.question}>{item.question}</button>)}
-      </div>}
+          }} title={item.question}><MessageCircle size={15} /><span>{item.question}</span></button>)}
+      </nav>}
       {session && <footer className="sidebar-footer">
-        <span className="person-symbol">{session.role === 'quality' ? <ClipboardCheck size={19} /> : <BookOpen size={18} />}</span>
+        <span className="person-symbol">{session.role === 'quality' ? <ClipboardCheck size={18} /> : <UserRound size={18} />}</span>
         <div><strong>{roles[session.role]}</strong><small>{session.role === 'demo' ? 'Демонстрационный корпус' : 'Рабочий контур'}</small></div>
         {session.role !== 'demo' && <button type="button" className="icon-button" title="Выйти" aria-label="Выйти"
           onClick={() => void api<Session>('/session', { method: 'DELETE' }).then(applySession).catch((error: unknown) => setFailure(describeError(error)))}><LogOut size={17} /></button>}
