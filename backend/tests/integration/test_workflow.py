@@ -185,7 +185,17 @@ def test_complex_project_compares_deadlines_from_confirmed_sources(settings, tmp
             assert citation.json()["quote"] == rules[row["department"]]
 
 
-def test_numbered_docx_keeps_the_intro_and_both_estimate_deadlines(settings, tmp_path):
+@pytest.mark.parametrize(
+    ("question", "selected_paragraphs", "expected_count"),
+    [
+        ("Сколько дней закладывать на точную и бюджетную оценку?", (0, 1, 2), 3),
+        ("Какой срок рекомендован для точной оценки?", (1,), 2),
+    ],
+    ids=["complete_clause", "selected_list_item"],
+)
+def test_numbered_docx_keeps_the_intro_and_selected_deadlines(
+    settings, tmp_path, question, selected_paragraphs, expected_count,
+):
     from docx import Document
 
     rule = [
@@ -211,20 +221,26 @@ def test_numbered_docx_keeps_the_intro_and_both_estimate_deadlines(settings, tmp
 
     class EstimateChat(ScriptedChat):
         def decide(self, data):
-            rule_sources = [source for source in data["sources"] if source.get("clause_number") == "1.1"]
+            rule_sources = {
+                source["text"]: source for source in data["sources"] if source.get("clause_number") == "1.1"
+            }
+            for index in selected_paragraphs:
+                if index:
+                    assert rule_sources[rule[index]]["clause_intro"] == rule[0]
             return Decision(
-                outcome="answered", evidence=[source["ref"] for source in rule_sources], clarification="",
+                outcome="answered", evidence=[rule_sources[rule[index]]["ref"] for index in selected_paragraphs],
+                clarification="",
             ), {}
 
     with TestClient(create_app(settings, EstimateChat())) as client:
         client.get("/api/v1/session")
         question_id = client.post("/api/v1/questions", json={
-            "question": "Сколько дней закладывать на точную и бюджетную оценку?",
+            "question": question,
             "document_ids": ["estimates"],
         }).json()["id"]
         result = wait_question(client, question_id)["result"]
         assert result["outcome"] == "answered"
-        assert [citation["quote"] for citation in result["citations"]] == rule
+        assert [citation["quote"] for citation in result["citations"]] == rule[:expected_count]
         assert all(citation["locator"]["clause_number"] == "1.1" for citation in result["citations"])
 
 

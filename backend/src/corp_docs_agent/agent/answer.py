@@ -46,14 +46,18 @@ def add_chat_usage(usage: dict, call_usage: dict) -> None:
             usage[key] = usage.get(key, 0) + call_usage[key]
 
 
-def locate_evidence(refs: list[int], sources: list[Candidate]) -> list[tuple[Candidate, int, int]]:
-    located = []
-    for ref in dict.fromkeys(refs):
+def locate_evidence(
+    refs: list[int], sources: list[Candidate], introductions: dict[str, Candidate] | None = None,
+) -> list[tuple[Candidate, int, int]]:
+    located: dict[str, Candidate] = {}
+    for ref in refs:
         if not 1 <= ref <= len(sources):
             raise ProviderError("unverified_evidence")
         source = sources[ref - 1]
-        located.append((source, source.start, source.start + len(source.text)))
-    return located
+        if introductions and (intro := introductions.get(source.id)):
+            located.setdefault(intro.id, intro)
+        located.setdefault(source.id, source)
+    return [(source, source.start, source.start + len(source.text)) for source in located.values()]
 
 
 def scope_passages(field: str, question: str, candidates: list[Candidate], semantic_support: set[str]) -> dict[str, list[Candidate]]:
@@ -208,6 +212,11 @@ class AnswerWorker:
             ranked = primary + anchor_candidates
             clauses = load_numbered_clauses(conn, ranked + adjacent, versions, missing, combined)
             candidates = select_evidence(ranked, adjacent, list(first_by_department.values()), clauses)
+        # A list item inherits the scope and qualifications in its introductory paragraph.
+        introductions = {
+            item.id: group[0] for item in candidates
+            if (group := clauses.get(item.block_id)) and group[0].id != item.id and group[0].text.rstrip().endswith(":")
+        }
         trace = [{
             "step": "retrieval", "lexical_hits": len(lexical), "vector_hits": len(vector_ids),
             "related_hits": len(adjacent), "candidates": len(candidates), "vector_state": vector_state,
@@ -254,13 +263,14 @@ class AnswerWorker:
                         "scope": {field: value for field, value in item.version.metadata["scope"].items() if value},
                         **{key: item.locator[key] for key in ("section_path", "clause_number", "column_header")
                            if item.locator.get(key)},
+                        **({"clause_intro": introductions[item.id].text} if item.id in introductions else {}),
                     }
                     for number, item in enumerate(candidates, 1)
                 ],
             }
             if department_versions:
                 outcome, evidence, clarifier, department_refs = self.assess_departments(
-                    assessment, candidates, department_versions, semantic_support, usage,
+                    assessment, candidates, department_versions, semantic_support, usage, introductions,
                     started + getattr(self.chat, "timeout", 90.0),
                 )
             else:
@@ -269,7 +279,9 @@ class AnswerWorker:
                 outcome, clarifier = decision.outcome, decision.clarification
                 review_partial = outcome == "partial"
                 if outcome != "not_found":
-                    evidence = locate_evidence(decision.evidence, candidates)
+                    evidence = locate_evidence(
+                        decision.evidence, candidates, introductions if outcome in {"answered", "partial"} else None,
+                    )
             trace.append({"step": "assessment", "duration_ms": elapsed_ms(model_started)})
             if outcome == "answered" and not topic_supported(
                 question["question"],
@@ -396,7 +408,7 @@ class AnswerWorker:
 
     def assess_departments(
         self, assessment: dict, candidates: list[Candidate], department_versions: dict,
-        semantic_support: set[str], usage: dict, deadline: float,
+        semantic_support: set[str], usage: dict, introductions: dict[str, Candidate], deadline: float,
     ) -> tuple[str, list, str, dict[str, list[int]]]:
         outcomes = []
         evidence = []
@@ -426,8 +438,10 @@ class AnswerWorker:
                     **assessment, "context": context, "focus_department": department,
                     "sources": [{**source, "ref": ref} for ref, (_, source) in enumerate(scope_matches, 1)],
                 }, timeout=remaining / (len(department_versions) - number))
-                selected = ([] if decision.outcome == "not_found"
-                            else locate_evidence(decision.evidence, [item for item, _ in scope_matches]))
+                selected = [] if decision.outcome == "not_found" else locate_evidence(
+                    decision.evidence, [item for item, _ in scope_matches],
+                    introductions if decision.outcome in {"answered", "partial"} else None,
+                )
             except ProviderError as error:
                 add_chat_usage(usage, {})
                 failure = error
