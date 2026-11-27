@@ -121,17 +121,18 @@ def test_department_variants_complex_projects_and_glossary(settings, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("engineering_timing", "has_comparison", "engineering_outcome"),
+    ("engineering_timing", "has_comparison", "coverage_complete"),
     [
-        ("за 10 календарных дней до согласования сметы", True, "answered"),
-        ("за 10 календарных дней", False, "answered"),
-        ("за 10 календарных дней до согласования сметы и за 12 календарных дней до начала работ", False, "answered"),
-        ("за 10 календарных дней до согласования сметы", True, "partial"),
+        ("за 10 календарных дней до согласования сметы", True, None),
+        ("за 10 календарных дней", False, None),
+        ("за 10 календарных дней до согласования сметы и за 12 календарных дней до начала работ", False, None),
+        ("за 10 календарных дней до согласования сметы", True, True),
+        ("за 10 календарных дней до согласования сметы", False, False),
     ],
-    ids=["comparison", "missing_anchor", "multiple_deadlines", "department_coverage"],
+    ids=["comparison", "missing_anchor", "multiple_deadlines", "department_coverage", "incomplete_department"],
 )
 def test_complex_project_compares_deadlines_from_confirmed_sources(
-    settings, tmp_path, engineering_timing, has_comparison, engineering_outcome,
+    settings, tmp_path, engineering_timing, has_comparison, coverage_complete,
 ):
     implementation = "Дирекция внедрения"
     engineering = "Проектное бюро"
@@ -157,16 +158,16 @@ def test_complex_project_compares_deadlines_from_confirmed_sources(
             department = data["focus_department"]
             rule = rules[department]
             ref = next(source["ref"] for source in data["sources"] if source["text"] == rule)
-            outcome = engineering_outcome if department == engineering else "answered"
+            outcome = "partial" if department == engineering and coverage_complete is not None else "answered"
             return Decision(outcome=outcome, evidence=[ref], clarification=""), {}
 
         def check_coverage(self, data, timeout):
-            assert engineering_outcome == "partial"
+            assert coverage_complete is not None
             assert data["context"]["departments"] == list(rules)
             assert [(item["text"], item["departments"]) for item in data["citations"]] == [
                 (rule, [department]) for department, rule in rules.items()
             ]
-            return Coverage(complete=True), {}
+            return Coverage(complete=coverage_complete), {}
 
     with TestClient(create_app(settings, DeadlineChat())) as client:
         client.get("/api/v1/session")
@@ -175,7 +176,7 @@ def test_complex_project_compares_deadlines_from_confirmed_sources(
             "context": {"departments": [implementation, engineering]},
         }).json()["id"]
         result = wait_question(client, question_id)["result"]
-        assert result["outcome"] == "answered"
+        assert result["outcome"] == ("partial" if coverage_complete is False else "answered")
         assert [citation["quote"] for citation in result["citations"]] == list(rules.values())
         if not has_comparison:
             assert result["department_comparison"] == []
