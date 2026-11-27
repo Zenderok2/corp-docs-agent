@@ -81,11 +81,16 @@ function App() {
 
   return <div className="app-shell">
     {navOpen && <button type="button" className="navigation-scrim" aria-label="Закрыть навигацию" onClick={() => setNavOpen(false)} />}
-    <aside className={'sidebar' + (navOpen ? ' open' : '')}>
-      <button type="button" className="brand" onClick={startQuestion}>
-        <span><BookOpen size={21} strokeWidth={1.65} /></span>
-        <strong>Агент документов</strong>
-      </button>
+    <aside id="app-sidebar" className={'sidebar' + (navOpen ? ' open' : '')}>
+      <div className="sidebar-heading">
+        <button type="button" className="brand" onClick={startQuestion}>
+          <span><BookOpen size={21} strokeWidth={1.65} /></span>
+          <strong>Агент документов</strong>
+        </button>
+        <button type="button" className="icon-button sidebar-close" aria-label="Закрыть меню" onClick={() => setNavOpen(false)}>
+          <X size={22} />
+        </button>
+      </div>
       <button type="button" className="new-question" onClick={startQuestion}><Plus size={17} /> Новый вопрос</button>
       <nav aria-label="Основная навигация">
         <button type="button" aria-current={section === 'ask' ? 'page' : undefined} onClick={() => navigate('ask')}><MessageSquareText size={18} />{labels.ask}</button>
@@ -113,8 +118,8 @@ function App() {
     <main className="main-shell">
       <header className="topbar">
         <div className="topbar-title">
-          <button type="button" className="icon-button mobile-menu" aria-label={navOpen ? 'Закрыть меню' : 'Открыть меню'} aria-expanded={navOpen} onClick={() => setNavOpen(!navOpen)}>
-            {navOpen ? <X size={22} /> : <Menu size={22} />}
+          <button type="button" className="icon-button mobile-menu" aria-label="Открыть меню" aria-controls="app-sidebar" aria-expanded={navOpen} onClick={() => setNavOpen(!navOpen)}>
+            <Menu size={22} />
           </button>
           <strong>{labels[section]}</strong>
         </div>

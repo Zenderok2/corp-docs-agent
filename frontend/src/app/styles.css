@@ -114,6 +114,7 @@ textarea::placeholder, input::placeholder { color: var(--muted); }
   position: sticky; top: 0; height: 100dvh; display: flex; flex-direction: column; gap: 22px;
   padding: 22px 16px 17px; background: var(--sidebar); border-right: 1px solid var(--line);
 }
+.sidebar-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .brand {
   display: flex; align-items: center; align-self: start; gap: 9px; min-width: 0;
   padding: 0 3px; background: transparent; border: 0; color: var(--ink); text-align: left;
@@ -160,7 +161,7 @@ textarea::placeholder, input::placeholder { color: var(--muted); }
 .sidebar-footer strong { font-size: .8rem; }
 .sidebar-footer small { margin-top: 3px; color: var(--muted); font-size: .7rem; }
 .sidebar-footer .icon-button { flex: 0 0 auto; margin-left: auto; color: var(--accent); }
-.mobile-menu, .navigation-scrim { display: none; }
+.icon-button.mobile-menu, .icon-button.sidebar-close, .navigation-scrim { display: none; }
 
 .main-shell { min-width: 0; }
 .topbar {
@@ -474,13 +475,18 @@ textarea:not(.composer > textarea) { resize: vertical; }
 @media (max-width: 670px) {
   :root { --bar-height: 56px; }
   .app-shell { display: block; }
-  .mobile-menu { display: inline-flex; margin-left: -7px; }
+  .icon-button.mobile-menu { display: inline-flex; margin-left: -7px; }
+  .icon-button.mobile-menu, .icon-button.sidebar-close { width: 44px; min-height: 44px; }
   .topbar { padding: 0 14px; }
   .topbar-title, .topbar-actions { gap: 5px; }
+  .topbar-title { min-width: 0; }
+  .topbar-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .status-pill { padding: 4px 5px; font-size: .68rem; }
-  .button.topbar-action { padding: 4px 6px; font-size: .78rem; }
+  .button.topbar-action { min-height: 44px; padding: 4px 6px; font-size: .78rem; }
   .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 4; width: min(246px, 83vw); visibility: hidden; }
   .sidebar.open { visibility: visible; box-shadow: var(--drawer-shadow); }
+  .sidebar.open .sidebar-close { display: inline-flex; flex: 0 0 auto; margin-right: -5px; color: var(--muted); }
+  .sidebar nav button, .new-question, .recent button { min-height: 44px; }
   .navigation-scrim { display: block; position: fixed; inset: 0; z-index: 3; border: 0; background: var(--scrim); }
   .ask-main, .evidence-rail, .content-page { padding-left: 15px; padding-right: 15px; }
   .ask-main { padding-top: 22px; gap: 16px; }
@@ -489,6 +495,10 @@ textarea:not(.composer > textarea) { resize: vertical; }
   .welcome h1 { font-size: clamp(1.98rem, 7.7vw, 2.65rem); }
   .welcome p { font-size: .89rem; }
   .composer { padding: 13px; }
+  .composer-actions { flex-wrap: wrap; }
+  .composer-submit { margin-left: auto; }
+  .composer-actions > .text-button, .composer-submit .primary, .mobile-evidence-link { min-height: 44px; }
+  .composer > textarea, input:not([type="checkbox"]), textarea:not(.composer > textarea) { font-size: 1rem; }
   .answer-panel { padding: 15px; }
   .no-access { flex-wrap: wrap; }
   .content-page { padding-top: 28px; }
@@ -499,7 +509,7 @@ textarea:not(.composer > textarea) { resize: vertical; }
   .dialog-body { padding: 15px; }
 }
 @media (max-width: 530px) {
-  .button.theme-toggle { min-width: 34px; }
+  .button.theme-toggle { min-width: 44px; }
   .theme-toggle span { display: none; }
 }
 @media (max-width: 420px) {

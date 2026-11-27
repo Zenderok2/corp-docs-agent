@@ -101,7 +101,10 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
         : { question, context: departmentNames.length > 1
           ? { ...context, department: null, departments: departmentNames }
           : { ...context, department: departmentNames[0] ?? null }, as_of: asOf || undefined }
-      const response = await post<Interaction>(path, request, crypto.randomUUID())
+      // getRandomValues also works when the LAN preview is served over HTTP.
+      const randomBytes = crypto.getRandomValues(new Uint8Array(16))
+      const requestKey = Array.from(randomBytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+      const response = await post<Interaction>(path, request, requestKey)
       setDraft('')
       setFollowUp('')
       setDepartmentSelection(null)
