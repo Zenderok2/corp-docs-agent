@@ -9,6 +9,7 @@ from uuid import uuid4
 from corp_docs_agent.agent.grounding import (
     concise_excerpts, outside_document_qa, table_abbreviations_covered, verification_input,
 )
+from corp_docs_agent.persistence.quality_answers import find_quality_answer
 from corp_docs_agent.persistence.quality_mail import send_request
 from corp_docs_agent.persistence.store import Store, corpus_revision, json_dump, now, visible_versions
 from corp_docs_agent.providers.llama import Chat, ProviderError
@@ -16,7 +17,7 @@ from corp_docs_agent.retrieval.search import (
     Candidate, amount_applies, eligible_versions, expand_evidence, lexical_ids, load_candidates, load_numbered_clauses,
     mentioned_departments, rank_ids, search_terms, select_evidence, topic_supported,
 )
-from corp_docs_agent.retrieval.terms import canonical_question, glossary_hints, scope_key
+from corp_docs_agent.retrieval.terms import glossary_hints, scope_key
 
 
 logger = logging.getLogger(__name__)
@@ -89,28 +90,6 @@ def decide_scope(evidence: list, candidates: list[Candidate], context: dict) -> 
         if not context.get(key) and choices:
             return key, choices
     return None, []
-
-
-def find_quality_answer(conn: sqlite3.Connection, question: sqlite3.Row) -> sqlite3.Row | None:
-    key = canonical_question(question["question"])
-    matches = conn.execute(
-        """
-        SELECT k.id, k.canonical_question, k.answer, k.reviewed_at
-        FROM quality_keys keys
-        JOIN quality_cases k ON k.id = keys.case_id
-        JOIN questions source ON source.id = k.question_id
-        WHERE keys.question_key = ? AND k.status = 'published'
-          AND source.role = ? AND source.context = ? AND source.document_ids = ?
-          AND source.turns = ? AND source.as_of <= ?
-          AND (k.effective_to IS NULL OR k.effective_to >= ?)
-        ORDER BY k.reviewed_at DESC, k.id DESC LIMIT 2
-        """,
-        (key, question["role"], question["context"], question["document_ids"], question["turns"],
-         question["as_of"], question["as_of"]),
-    ).fetchall()
-    if not matches or (len(matches) > 1 and matches[0]["answer"] != matches[1]["answer"]):
-        return None
-    return matches[0]
 
 
 class AnswerWorker:
@@ -539,7 +518,9 @@ class AnswerWorker:
             result["quality_case_id"] = None
             result["quality_answer_id"] = None
             if result["outcome"] in {"not_found", "partial", "conflict"}:
-                quality = find_quality_answer(conn, question)
+                quality = find_quality_answer(
+                    conn, question, result["outcome"], result["corpus_revision"], allowed_versions,
+                )
                 if quality:
                     result["quality_answer_id"] = quality["id"]
                     if result["outcome"] == "not_found":

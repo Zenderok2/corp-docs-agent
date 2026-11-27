@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from corp_docs_agent.agent.grounding import parse_before_deadline
 from corp_docs_agent.api.auth import Principal
 from corp_docs_agent.core.settings import Settings
+from corp_docs_agent.persistence.quality_answers import changes_known_deadline, find_quality_answer, publication_block
 from corp_docs_agent.persistence.quality_mail import mail_thread
 from corp_docs_agent.persistence.store import corpus_revision, json_dump, now, visible_versions
 
@@ -137,6 +138,7 @@ def encode_question(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     result = json.loads(row["result"])
     if row["status"] == "completed":
         versions = visible_versions(conn, row["role"])
+        revision = corpus_revision(conn)
         all_citations = {
             citation["id"]: citation
             for citation in conn.execute(EVIDENCE_SQL + " WHERE s.question_id = ?", (row["id"],))
@@ -158,26 +160,29 @@ def encode_question(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         )
         result["practices"] = published_practices(conn, citations, row["role"])
         result["quality_answer"] = None
-        if quality_id := result.pop("quality_answer_id"):
-            quality = conn.execute(
-                """SELECT id, canonical_question AS question, answer, reviewed_at
-                FROM quality_cases WHERE id = ? AND status = 'published'""",
-                (quality_id,),
-            ).fetchone()
+        quality_id = result.pop("quality_answer_id", None)
+        if quality_id and result["outcome"] != "conflict":
+            source_outcome = "not_found" if result["outcome"] == "quality_answer" else result["outcome"]
+            quality = find_quality_answer(conn, row, source_outcome, revision, versions, case_id=quality_id)
             if quality is None:
                 fail(409, "source_access_changed")
-            result["quality_answer"] = dict(quality)
+            result["quality_answer"] = {key: quality[key] for key in ("id", "question", "answer", "reviewed_at")}
         if case_id := result.pop("quality_case_id"):
             case = conn.execute("SELECT id, status, question_id FROM quality_cases WHERE id = ?", (case_id,)).fetchone()
             result["quality_case"] = {"id": case["id"], "status": case["status"], "mail": mail_thread(conn, case_id)}
-            if case["status"] == "published" and case["question_id"] == row["id"] and result["quality_answer"] is None:
+            blocked = publication_block(result["outcome"], result["corpus_revision"], revision)
+            if (case["status"] == "published" and case["question_id"] == row["id"]
+                    and result["quality_answer"] is None and blocked is None):
                 quality = conn.execute(
                     "SELECT id, canonical_question AS question, answer, reviewed_at FROM quality_cases WHERE id = ?",
                     (case_id,),
                 ).fetchone()
-                result["quality_answer"] = dict(quality)
+                if result["outcome"] != "partial" or not changes_known_deadline(
+                    conn, row["id"], date.fromisoformat(row["as_of"]), versions, quality["answer"],
+                ):
+                    result["quality_answer"] = dict(quality)
         else:
             result["quality_case"] = None
-        result["corpus_changed"] = result["corpus_revision"] != corpus_revision(conn)
+        result["corpus_changed"] = result["corpus_revision"] != revision
     payload["result"] = result
     return payload

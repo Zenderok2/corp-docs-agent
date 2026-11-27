@@ -138,6 +138,7 @@ export type QualityCase = {
   effective_to: string | null
   aliases: string[]
   reason: string
+  publication_block: 'quality_source_conflict' | 'quality_corpus_changed' | null
   as_of: string
   turns: string[]
   context: QuestionContext
@@ -175,6 +176,9 @@ const problem: Record<string, string> = {
   document_not_found: 'Документ недоступен.',
   quality_access_required: 'Для этого действия нужен доступ службы качества.',
   quality_answer_conflict: 'Уже опубликован другой ответ с той же формулировкой и областью действия.',
+  quality_source_conflict: 'Пункты регламентов расходятся. Согласуйте их применимость с владельцем документа. Публикация приостановлена.',
+  quality_corpus_changed: 'После разбора запроса документы обновились. Для публикации нужен новый вопрос по текущему корпусу.',
+  quality_deadline_changed: 'В ответе изменён срок из найденного пункта. Откройте цитату и сверьте срок с регламентом.',
   invalid_effective_date: 'Дата окончания не может предшествовать дате запроса.',
   practice_already_submitted: 'По этой цитате вы уже отправили пример.',
 }

@@ -31,7 +31,7 @@ const outcomeLabels = {
 const explanations: Record<string, string> = {
   unknown_publication: 'Найдены подходящие положения. Действие редакции на выбранную дату не подтверждено.',
   partial: 'Доступные источники подтверждают часть ответа.',
-  conflict: 'Доступные положения дают разные ответы. Для однозначного решения нужна проверка службы качества.',
+  conflict: 'Доступные положения расходятся. Службе качества нужно согласовать применимость с владельцем регламента.',
   clarification_exhausted: 'После уточнений подтверждённого ответа всё ещё недостаточно.',
   no_evidence: 'В доступных источниках не нашлось пункта, который прямо отвечает на вопрос.',
   out_of_scope: 'Агент ищет правила в корпоративных документах. За оперативными данными обратитесь к владельцу процесса.',
@@ -320,7 +320,7 @@ function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: 
     {answer.quality_answer && <div className="knowledge-answer">
       {answer.outcome !== 'quality_answer' && <strong>Ответ службы качества</strong>}
       <p>{answer.quality_answer.answer}</p>
-      <small>Проверено службой качества · {formatDate(answer.quality_answer.reviewed_at)}</small>
+      <small>Консультация по этому контексту · {formatDate(answer.quality_answer.reviewed_at)}</small>
     </div>}
     {answer.practices.length > 0 && <div className="approved-practices">
       <h3>Практика применения</h3>

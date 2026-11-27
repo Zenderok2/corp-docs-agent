@@ -506,6 +506,131 @@ def test_gap_approved_answer_and_withdrawal(settings):
         assert client.get(f"/api/v1/questions/{new}").status_code == 409
 
 
+@pytest.fixture
+def quality_deadlines(settings, tmp_path):
+    rules = {
+        "request-deadline": "Заявка направляется не менее чем за 4 рабочих дня до начала работ.",
+        "other-deadline": "Заявка направляется не менее чем за 2 рабочих дня до начала работ.",
+        "later-deadline": "Заявка направляется за 6 рабочих дней до начала работ.",
+    }
+    sources = []
+    for key, rule in rules.items():
+        path = tmp_path / f"{key}.txt"
+        path.write_text(rule, encoding="utf-8")
+        sources.append({
+            "path": path.name, "key": key, "version": "test", "title": key, "kind": "regulations",
+            "status": "published", "groups": ["demo"],
+            **({"effective_from": "2026-12-01"} if key == "later-deadline" else {}),
+        })
+    manifest = tmp_path / "quality-deadlines.json"
+    manifest.write_text(json.dumps({"sources": sources}), encoding="utf-8")
+    assert all(item["status"] == "imported" for item in import_catalog(settings, manifest))
+
+    class RulesChat(ScriptedChat):
+        outcome = "not_found"
+        chosen = []
+
+        def decide(self, data):
+            refs = [source["ref"] for source in data["sources"] if source["text"] in self.chosen]
+            return Decision(outcome=self.outcome, evidence=refs, clarification=""), {}
+
+    request = {
+        "question": "Когда направляется заявка и кто утверждает заявку?", "as_of": "2026-11-27",
+        "document_ids": list(rules),
+    }
+    return RulesChat(), request, rules, manifest
+
+
+def test_quality_reply_cannot_override_conflicting_regulations(settings, quality_deadlines):
+    chat, request, rules, _ = quality_deadlines
+    with TestClient(create_app(settings, chat)) as client:
+        client.get("/api/v1/session")
+        employee = client.cookies.get("corp_docs_session")
+        original = client.post("/api/v1/questions", json=request).json()["id"]
+        previous_case = wait_question(client, original)["result"]["quality_case"]["id"]
+        client.post("/api/v1/session", json={"role": "quality", "code": "quality-test"})
+        approval = {"decision": "publish", "question": request["question"], "answer": rules["other-deadline"]}
+        assert client.put(f"/api/v1/quality/cases/{previous_case}", json=approval).status_code == 200
+
+        client.cookies.clear()
+        client.cookies.set("corp_docs_session", employee)
+        chat.outcome = "conflict"
+        chat.chosen = [rules["request-deadline"], rules["other-deadline"]]
+        latest = client.post("/api/v1/questions", json=request).json()["id"]
+        result = wait_question(client, latest)["result"]
+        assert result["outcome"] == "conflict" and result["quality_answer"] is None
+        assert {item["quote"] for item in result["citations"]} == set(chat.chosen)
+        case = result["quality_case"]
+        assert case["status"] == "pending" and len(case["mail"]) == 1
+
+        client.cookies.clear()
+        assert client.post("/api/v1/session", json={"role": "quality", "code": "quality-test"}).status_code == 200
+        items = client.get("/api/v1/quality/cases").json()["items"]
+        item = next(item for item in items if item["id"] == case["id"])
+        assert item["publication_block"] == "quality_source_conflict"
+        refused = client.put(f"/api/v1/quality/cases/{case['id']}", json=approval)
+        assert refused.status_code == 409 and refused.json()["detail"] == "quality_source_conflict"
+
+
+def test_quality_supplement_must_match_current_norms(settings, quality_deadlines):
+    chat, request, rules, manifest = quality_deadlines
+    chat.outcome = "partial"
+    chat.chosen = [rules["request-deadline"]]
+    with TestClient(create_app(settings, chat)) as client:
+        def ask(payload=request):
+            question_id = client.post("/api/v1/questions", json=payload).json()["id"]
+            return question_id, wait_question(client, question_id)["result"]
+
+        client.get("/api/v1/session")
+        employee = client.cookies.get("corp_docs_session")
+        original, result = ask()
+        assert result["outcome"] == "partial"
+        case_id = result["quality_case"]["id"]
+        case_url = f"/api/v1/quality/cases/{case_id}"
+        client.post("/api/v1/session", json={"role": "quality", "code": "quality-test"})
+        approval = {"decision": "publish", "question": request["question"], "answer": rules["other-deadline"]}
+        refused = client.put(case_url, json=approval)
+        assert refused.status_code == 409 and refused.json()["detail"] == "quality_deadline_changed"
+        approval["answer"] = "Полномочия на утверждение заявки уточните у руководителя проекта."
+        assert client.put(case_url, json=approval).status_code == 200
+
+        client.cookies.clear()
+        client.cookies.set("corp_docs_session", employee)
+        reused, result = ask()
+        assert result["outcome"] == "partial" and result["quality_answer"]["answer"] == approval["answer"]
+        # Simulate a conflicting publication persisted before deadline validation existed.
+        with Store(settings.database).connect(write=True) as conn:
+            conn.execute("UPDATE quality_cases SET answer = ? WHERE id = ?", (rules["other-deadline"], case_id))
+        assert wait_question(client, original)["result"]["quality_answer"] is None
+        assert ask()[1]["quality_answer"] is None
+        with Store(settings.database).connect(write=True) as conn:
+            conn.execute("UPDATE quality_cases SET answer = ? WHERE id = ?", (approval["answer"], case_id))
+        assert ask({**request, "as_of": "2026-11-28"})[1]["quality_answer"] is not None
+        assert ask({**request, "as_of": "2026-12-02"})[1]["quality_answer"] is None
+        chat.chosen = [rules["other-deadline"]]
+        assert ask()[1]["quality_answer"] is None
+
+        new_catalog = json.loads(manifest.read_text(encoding="utf-8"))
+        new_catalog["sources"][0]["title"] = "Обновлённые правила подачи заявки"
+        manifest.write_text(json.dumps(new_catalog), encoding="utf-8")
+        assert import_catalog(settings, manifest)[0]["status"] == "updated"
+        chat.chosen = [rules["request-deadline"]]
+        previous = wait_question(client, original)["result"]
+        assert previous["corpus_changed"] and previous["quality_answer"] is None
+        assert [entry["direction"] for entry in previous["quality_case"]["mail"]] == ["request", "reply"]
+        assert client.get(f"/api/v1/questions/{reused}").status_code == 409
+
+        _, new_result = ask()
+        assert new_result["quality_answer"] is None and new_result["quality_case"]["status"] == "pending"
+        client.cookies.clear()
+        assert client.post("/api/v1/session", json={"role": "quality", "code": "quality-test"}).status_code == 200
+        refused = client.put(case_url, json=approval)
+        assert refused.status_code == 409 and refused.json()["detail"] == "quality_corpus_changed"
+        replacement = {**approval, "answer": "Уточните полномочия на утверждение у владельца процесса."}
+        new_case_url = f"/api/v1/quality/cases/{new_result['quality_case']['id']}"
+        assert client.put(new_case_url, json=replacement).status_code == 200
+
+
 def test_pending_mail_is_migrated_once(settings):
     with TestClient(create_app(settings, ScriptedChat())) as client:
         client.get("/api/v1/session")

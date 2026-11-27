@@ -1,3 +1,4 @@
+from decimal import Decimal
 import re
 
 from corp_docs_agent.providers.llama import Finding
@@ -60,6 +61,22 @@ def parse_before_deadline(quote: str) -> dict[str, str | None] | None:
     if match is None or any(RELATIVE_OFFSET.search(match[field]) for field in ("action", "anchor")):
         return None
     return match.groupdict()
+
+
+def changes_explicit_deadline(quote: str, reply: str) -> bool:
+    """Detect a changed amount when a reply restates the same explicit deadline."""
+    original = parse_before_deadline(quote.casefold().replace("ё", "е"))
+    proposed = parse_before_deadline(reply.casefold().replace("ё", "е"))
+    if not original or not proposed:
+        return False
+    if any(original[key] != proposed[key] for key in ("action", "anchor", "condition")):
+        return False
+    before, after = original["deadline"], proposed["deadline"]
+    if NUMBERS.sub("#", before) != NUMBERS.sub("#", after):
+        return False
+    amounts = (Decimal(NUMBERS.search(value)[0].replace(",", ".")) for value in (before, after))
+    left, right = amounts
+    return left != right
 
 
 def concise_excerpts(evidence: list[tuple[Candidate, int, int]]) -> list[dict]:

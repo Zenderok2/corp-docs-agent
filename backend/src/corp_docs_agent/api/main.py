@@ -18,8 +18,9 @@ from corp_docs_agent.api.records import (
 )
 from corp_docs_agent.core.settings import Settings
 from corp_docs_agent.domain.models import Ask, CaseReview, FollowUp, Login, PracticeReport, PracticeReview
+from corp_docs_agent.persistence.quality_answers import changes_known_deadline, publication_block
 from corp_docs_agent.persistence.quality_mail import as_eml, mail_thread, recover_pending_mail, send_reply
-from corp_docs_agent.persistence.store import Store, json_dump, now, visible_versions
+from corp_docs_agent.persistence.store import Store, corpus_revision, json_dump, now, visible_versions
 from corp_docs_agent.providers.llama import Chat
 from corp_docs_agent.retrieval.terms import canonical_question
 
@@ -281,14 +282,20 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
             rows = conn.execute(
                 """SELECT k.id, k.status, k.question_id, k.canonical_question, k.answer, k.effective_to,
                 k.created_at, k.reviewed_at, q.question, q.turns, q.context, q.as_of, q.role,
-                json_extract(q.result, '$.message_code') AS reason
+                json_extract(q.result, '$.message_code') AS reason,
+                json_extract(q.result, '$.outcome') AS source_outcome,
+                json_extract(q.result, '$.corpus_revision') AS source_revision
                 FROM quality_cases k JOIN questions q ON q.id = k.question_id
                 ORDER BY (k.status = 'pending') DESC, k.created_at DESC LIMIT 75"""
             )
             versions = visible_versions(conn, "quality", for_review=True)
+            revision = corpus_revision(conn)
             items = []
             for row in rows:
                 item = dict(row)
+                item["publication_block"] = publication_block(
+                    item.pop("source_outcome"), item.pop("source_revision"), revision,
+                )
                 item["turns"] = json.loads(item["turns"])
                 item["context"] = json.loads(item["context"])
                 item["mail"] = mail_thread(conn, row["id"])
@@ -327,7 +334,9 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
         with store.connect(write=True) as conn:
             row = conn.execute(
                 """SELECT k.status, k.canonical_question, k.answer, k.effective_to,
-                q.as_of, q.role, q.context, q.document_ids, q.turns
+                q.id AS question_id, q.as_of, q.role, q.context, q.document_ids, q.turns,
+                json_extract(q.result, '$.outcome') AS source_outcome,
+                json_extract(q.result, '$.corpus_revision') AS source_revision
                 FROM quality_cases k JOIN questions q ON q.id = k.question_id WHERE k.id = ?""",
                 (case_id,),
             ).fetchone()
@@ -353,12 +362,19 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
                 return {"id": case_id, "status": status, "mail_id": send_reply(conn, thread, reply, reviewed_at)}
             if row["status"] not in {"pending", "published"}:
                 fail(409, "case_already_reviewed")
+            revision = corpus_revision(conn)
+            if blocked := publication_block(row["source_outcome"], row["source_revision"], revision):
+                fail(409, blocked)
             effective_to = data.effective_to.isoformat() if data.effective_to else None
             if effective_to and effective_to < row["as_of"]:
                 fail(422, "invalid_effective_date")
             keys = sorted({canonical_question(text) for text in [data.question, *data.aliases]})
             if "" in keys:
                 fail(422, "invalid_publication_question")
+            if row["source_outcome"] == "partial" and changes_known_deadline(
+                conn, row["question_id"], date.fromisoformat(row["as_of"]), visible_versions(conn, row["role"]), data.answer,
+            ):
+                fail(409, "quality_deadline_changed")
             if row["status"] == "published" and (data.question, data.answer, effective_to) == (
                 row["canonical_question"], row["answer"], row["effective_to"],
             ):
@@ -375,10 +391,12 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
                 WHERE k.id != ? AND k.status = 'published' AND k.answer != ?
                   AND keys.question_key IN (SELECT value FROM json_each(?))
                   AND q.role = ? AND q.context = ? AND q.document_ids = ? AND q.turns = ?
+                  AND json_extract(q.result, '$.corpus_revision') = ?
+                  AND json_extract(q.result, '$.outcome') IN ('not_found', 'partial')
                   AND (k.effective_to IS NULL OR k.effective_to >= ?)
                   AND (? IS NULL OR q.as_of <= ?) LIMIT 1""",
                 (case_id, data.answer, json_dump(keys), row["role"], row["context"], row["document_ids"], row["turns"],
-                 row["as_of"], effective_to, effective_to),
+                 revision, row["as_of"], effective_to, effective_to),
             ).fetchone()
             if has_conflict:
                 fail(409, "quality_answer_conflict")

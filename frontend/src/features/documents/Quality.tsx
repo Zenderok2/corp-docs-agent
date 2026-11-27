@@ -64,7 +64,7 @@ export function Quality() {
       <button type="button" aria-pressed={tab === 'cases'} onClick={() => setTab('cases')}>Входящие письма <span>{pending}</span></button>
       <button type="button" aria-pressed={tab === 'practices'} onClick={() => setTab('practices')}>Примеры применения <span>{reports}</span></button>
     </div>
-    {failure && <p className="alert error" role="alert">{failure}</p>}
+    {failure && (tab !== 'cases' || !selectedCase) && <p className="alert error" role="alert">{failure}</p>}
     {loading && <p className="working" role="status"><LoaderCircle size={18} className="spin" /> Загружаем очередь</p>}
     {tab === 'cases' && <>
       {!loading && !cases.length && <p className="card list-empty">Вопросов на проверку пока нет.</p>}
@@ -80,15 +80,21 @@ export function Quality() {
         {item.citations.map((citation) => <button type="button" className="button text-button review-citation" key={citation.id} onClick={() => setSourceId(citation.id)}>
           <FileCheck2 size={16} />{citation.title} · {formatLocator(citation.locator)}
         </button>)}
+        {item.publication_block && (item.status === 'pending' || item.status === 'published') &&
+          <p className="alert neutral">{describeError(item.publication_block)}</p>}
+        {item.reason === 'unknown_publication' && !item.publication_block && item.status === 'pending' &&
+          <p className="alert neutral">Уточните действие редакции на дату вопроса перед публикацией.</p>}
         <MailThread mail={item.mail} expanded={item.status === 'pending'} />
-        {!item.mail.length && item.answer && item.status === 'published' && <p className="published-text">{item.answer}</p>}
-        {(item.status === 'pending' || (item.status === 'published' && item.mail.length > 0)) && (selectedCase === item.id
-          ? <ReviewForm item={item} busy={working} onCancel={() => setSelectedCase(null)} onReview={(payload) => void review(
+        {!item.mail.length && item.answer && item.status === 'published' && !item.publication_block && <p className="published-text">{item.answer}</p>}
+        {!item.publication_block && (item.status === 'pending' || (item.status === 'published' && item.mail.length > 0)) && (selectedCase === item.id
+          ? <ReviewForm item={item} busy={working} failure={failure} onCancel={() => { setSelectedCase(null); setFailure('') }} onReview={(payload) => void review(
             '/quality/cases/' + item.id, { ...payload, in_reply_to: item.mail.at(-1)?.id },
           )} />
-          : <button type="button" className="button secondary" onClick={() => setSelectedCase(item.id)}><Mail size={16} />
+          : <button type="button" className="button secondary" disabled={working} onClick={() => { setSelectedCase(item.id); setFailure('') }}><Mail size={16} />
             {item.status === 'pending' ? 'Ответить в цепочке' : 'Отправить уточнённый ответ'}</button>
         )}
+        {item.publication_block && item.status === 'pending' && <button type="button" className="button text-button" disabled={working}
+          onClick={() => void review('/quality/cases/' + item.id, { decision: 'dismiss', in_reply_to: item.mail.at(-1)?.id })}>Закрыть обращение</button>}
         {item.status === 'published' && <button type="button" className="button text-button" disabled={working}
           onClick={() => void review('/quality/cases/' + item.id, { decision: 'withdraw', in_reply_to: item.mail.at(-1)?.id })}><CornerUpLeft size={16} /> Отозвать ответ</button>}
       </article>)}
@@ -112,8 +118,8 @@ export function Quality() {
   </section>
 }
 
-function ReviewForm({ item, busy, onReview, onCancel }: {
-  item: QualityCase; busy: boolean; onReview: (payload: object) => void; onCancel: () => void
+function ReviewForm({ item, busy, failure, onReview, onCancel }: {
+  item: QualityCase; busy: boolean; failure: string; onReview: (payload: object) => void; onCancel: () => void
 }) {
   const [answer, setAnswer] = useState(item.answer ?? '')
   const [question, setQuestion] = useState(item.canonical_question ?? item.question)
@@ -131,7 +137,8 @@ function ReviewForm({ item, busy, onReview, onCancel }: {
   return <form className="stack review-form" onSubmit={publish}>
     <label>Вопрос для базы знаний<input required minLength={4} maxLength={800} value={question} onChange={(event) => setQuestion(event.target.value)} /></label>
     <label>Проверенный ответ<textarea required minLength={5} maxLength={2000} rows={4} value={answer} onChange={(event) => setAnswer(event.target.value)} /></label>
-    <p className="soft">Ответ будет доступен пользователям в той же области и отобразится с пометкой службы качества.</p>
+    <p className="soft">Действующий регламент имеет приоритет. Опишите, как применить его в этой ситуации, или дополните сведения по пробелу.</p>
+    {failure && <p className="alert error" role="alert">{failure}</p>}
     <details className="quiet-details">
       <summary>Формулировки и срок действия</summary>
       <div className="stack">
