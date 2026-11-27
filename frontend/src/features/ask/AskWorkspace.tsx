@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   ArrowRight, ArrowUp, Check, ChevronDown, CircleHelp, ClipboardCheck,
-  FileText, FolderOpen, LibraryBig, ListFilter, MessageSquarePlus, Search, Sparkles,
+  FileText, FolderOpen, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, Search, Sparkles,
 } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, formatRevision, post, scopeFields } from '../../shared/api'
 import type { Answer, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
+import { Dialog } from '../../shared/Dialog'
 import { MailThread } from '../documents/MailThread'
 import { SourceDialog } from '../sources/SourceDialog'
 import { AgentOrb } from './AgentOrb'
@@ -40,14 +41,15 @@ const explanations: Record<string, string> = {
 
 type Interaction = { id: string }
 
-export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, inlineSources }: {
+export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, variant }: {
   session: Session
   activeId: string | null
   onSelect: (id: string) => void
   onLogin: () => void
   onLibrary: () => void
-  inlineSources: boolean
+  variant: 'focus' | 'workspace'
 }) {
+  const isWorkspace = variant === 'workspace'
   const [draft, setDraft] = useState('')
   const [context, setContext] = useState<Scope>({})
   const [asOf, setAsOf] = useState('')
@@ -58,6 +60,7 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
   const [submitted, setSubmitted] = useState<{ id: string | null; question: string } | null>(null)
   const [failure, setFailure] = useState('')
   const [sourceId, setSourceId] = useState<string | null>(null)
+  const [sourcesOpen, setSourcesOpen] = useState(false)
   const [practice, setPractice] = useState<Citation | null>(null)
   const requestInFlight = useRef<AbortController | null>(null)
 
@@ -93,6 +96,7 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
   const result = displayed?.result && 'outcome' in displayed.result ? displayed.result : null
   const awaiting = Boolean(activeId && !failure && (!displayed || ['queued', 'running'].includes(displayed.status)))
   const sending = submitted?.id === null
+  const busy = sending || awaiting
   const empty = !activeId && !sending
   const thinking = sending || (awaiting && (displayed !== null || submitted?.id === activeId))
   const pendingQuestion = !displayed && (sending || submitted?.id === activeId) ? submitted?.question : null
@@ -146,41 +150,43 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
       </div>
       {session.staff_login_available && <button className="button primary" onClick={onLogin}>Войти</button>}
     </div>
-  ) : !sending && !awaiting && !result?.clarification && (
-    <form className="composer card" onSubmit={submit}>
+  ) : (isWorkspace || !busy) && !result?.clarification && (
+    <form className="composer card" onSubmit={submit} aria-busy={isWorkspace && busy ? true : undefined}>
       <label className="visually-hidden" htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
       <textarea id="question-box" rows={2} value={draft} placeholder="Например, кто согласует план проекта?" required minLength={4} maxLength={800}
-        aria-keyshortcuts="Control+Enter Meta+Enter"
+        aria-keyshortcuts="Control+Enter Meta+Enter" disabled={isWorkspace && busy}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && draft.trim().length >= 4) {
+          if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing && draft.trim().length >= 4) {
             event.preventDefault()
             void send(draft.trim())
           }
         }}
       />
-      {expanded && <div className="context-fields">
+      {expanded && !(isWorkspace && busy) && <div className="context-fields">
         {scopeFields.map(({ key, label }) => <label key={key}>{label}<input type="text" value={context[key] ?? ''} maxLength={160}
           placeholder={key === 'department' ? 'Можно через точку с запятой' : undefined}
           onChange={(event) => setContext({ ...context, [key]: event.target.value || null })} /></label>)}
         <label>Дата применимости<input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} /></label>
       </div>}
       <div className="composer-actions">
-        <button type="button" className="button text-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+        <button type="button" className="button text-button" aria-expanded={expanded && !(isWorkspace && busy)}
+          disabled={isWorkspace && busy} onClick={() => setExpanded(!expanded)}>
           <ListFilter size={17} /> Указать контекст <ChevronDown size={14} className={expanded ? 'flipped' : ''} />
         </button>
         <div className="composer-submit">
           <kbd>Ctrl + Enter</kbd>
-          <button type="submit" className="button primary" disabled={draft.trim().length < 4}>
-            Спросить <ArrowUp size={17} />
+          <button type="submit" className="button primary" disabled={busy || draft.trim().length < 4}>
+            {isWorkspace && busy ? <>{sending ? 'Отправляем…' : 'Обработка…'} <LoaderCircle className="spin" size={16} /></>
+              : <>Спросить <ArrowUp size={17} /></>}
           </button>
         </div>
       </div>
     </form>
   )
 
-  const sources = result && <>
-    {result.citations.length > 0 ? <div className="evidence-list">
+  const sources = <>
+    {result?.citations.length ? <div className="evidence-list">
       {result.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
         <button type="button" className="source-link" onClick={() => setSourceId(citation.id)}>
           <span className="source-number">{index + 1}</span>
@@ -193,32 +199,45 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
         </button>
       </div>)}
     </div> : <>
-      <p className="evidence-empty">К этому ответу нет цитат.</p>
+      <p className="evidence-empty">{result ? 'К этому ответу нет цитат.' : 'Цитаты появятся после ответа.'}</p>
       {session.visible_versions > 0 && <button className="catalog-link" type="button" onClick={onLibrary}>
         <FolderOpen size={18} />
         <span><strong>Открыть каталог</strong><small>Доступно редакций · {session.visible_versions}</small></span>
         <ArrowRight size={16} />
       </button>}
     </>}
-    <Trace answer={result} />
+    {result && <Trace answer={result} />}
   </>
 
-  return <div className="ask-layout" data-empty={empty}>
-    <div className="ask-scenery" aria-hidden="true">
-      <div className="ask-scene">
-        <AgentOrb thinking={thinking} />
-      </div>
-    </div>
-    <section className="ask-main" aria-label="Диалог с агентом">
-      {empty && <div className="chat-start">
-        <header className="welcome">
-          <h1>Поиск по регламентам</h1>
-          <p>Спросите о рабочей ситуации и получите ответ со ссылками на документы.</p>
-        </header>
-        {error}
-        {composer}
-      </div>}
+  const followUpInput = displayed && result?.clarification ? <form className="follow-up-form" onSubmit={(event) => {
+    event.preventDefault()
+    const field = result.clarification?.field
+    const value = followUp.trim()
+    void send(value, displayed.id, field && field !== 'department' ? { [field]: value } : {})
+  }}>
+    <input aria-label="Ответ на уточняющий вопрос" placeholder="Введите уточнение" required
+      maxLength={result.clarification.field ? 160 : 800} value={followUp}
+      disabled={isWorkspace && sending} onChange={(event) => setFollowUp(event.target.value)} />
+    <button className="button primary" type="submit" disabled={sending || !followUp.trim()} aria-label="Отправить уточнение"><ArrowUp size={19} /></button>
+  </form> : null
 
+  const welcome = <header className="welcome">
+    <h1>{isWorkspace ? 'Новый чат' : 'Поиск по регламентам'}</h1>
+    <p>{isWorkspace ? 'Спросите о корпоративных правилах и проверьте ответ по цитатам из документов.'
+      : 'Спросите о рабочей ситуации и получите ответ со ссылками на документы.'}</p>
+  </header>
+
+  const examples = empty && session.role === 'demo' && session.visible_versions > 0 && <aside className="examples" aria-labelledby="example-questions">
+    <h2 id="example-questions">Примеры вопросов</h2>
+    <div className="example-grid">
+      {sampleQuestions.map((example) => <button type="button" className="example" key={example.label} onClick={() => {
+        setDraft(example.question)
+        document.getElementById('question-box')?.focus()
+      }}><span>{example.label}</span><ArrowRight size={16} /></button>)}
+    </div>
+  </aside>
+
+  const conversation = <>
       {pendingQuestion && <div className="conversation">
         <div className="question-bubble"><span className="speaker">Ваш вопрос</span><p>{pendingQuestion}</p></div>
       </div>}
@@ -235,10 +254,7 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
           <p className="alert error" role="alert">{describeError(displayed.result.error_code)}</p>
         )}
         {result && <AnswerPanel answer={result} openSource={setSourceId} />}
-        {!inlineSources && Boolean(result?.citations.length) && <a className="evidence-jump" href="#answer-sources">
-          <LibraryBig size={17} /> Источники ответа <ArrowRight size={16} />
-        </a>}
-        {inlineSources && result && <details className="card evidence-disclosure">
+        {!isWorkspace && result && <details className="card evidence-disclosure">
           <summary>
             <LibraryBig size={17} /> Источники ответа
             {result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
@@ -274,41 +290,55 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
               )}>{option}<ArrowRight size={15} /></button>
             })}
           </div>}
-          <form className="follow-up-form" onSubmit={(event) => {
-            event.preventDefault()
-            const field = result.clarification?.field
-            const value = followUp.trim()
-            void send(value, displayed.id, field && field !== 'department' ? { [field]: value } : {})
-          }}>
-            <input aria-label="Ответ на уточняющий вопрос" placeholder="Введите уточнение" required maxLength={result.clarification.field ? 160 : 800} value={followUp} onChange={(event) => setFollowUp(event.target.value)} />
-            <button className="button primary" type="submit" disabled={sending || !followUp.trim()} aria-label="Отправить уточнение"><ArrowUp size={19} /></button>
-          </form>
+          {!isWorkspace && followUpInput}
         </div>}
       </div>}
 
-      {(awaiting || sending) && <div className="pending-box" role="status">
-        <img src="/agent-mark.png" width="28" height="28" alt="" />
+      {busy && <div className="pending-box" role="status">
+        {isWorkspace ? <LoaderCircle className="spin" size={17} /> : <img src="/agent-mark.png" width="28" height="28" alt="" />}
         <strong>{sending ? 'Отправляем вопрос' : displayed?.status === 'running' ? 'Агент сверяет источники'
           : thinking ? 'Вопрос принят' : 'Открываем чат'}</strong>
       </div>}
-      {!empty && <>{error}{composer}</>}
+  </>
+
+  const sourceCount = result?.citations.length ?? 0
+  return <div className="ask-layout" data-empty={empty}>
+    {!isWorkspace && <div className="ask-scenery" aria-hidden="true">
+      <div className="ask-scene">
+        <AgentOrb thinking={thinking} />
+      </div>
+    </div>}
+    <section className="ask-main" aria-label="Диалог с агентом">
+      {isWorkspace ? <>
+        <div className="workspace-chat-tools">
+          <button type="button" className="button secondary" aria-haspopup="dialog" onClick={() => setSourcesOpen(true)}>
+            <LibraryBig size={16} /> Источники <span className="number-label">{sourceCount}</span>
+          </button>
+        </div>
+        <div className="workspace-chat-scroll" tabIndex={0} role="region" aria-label="Сообщения">
+          <div className="workspace-chat-body">
+            {empty ? <>{welcome}{examples}</> : conversation}
+            {error}
+          </div>
+        </div>
+        <div className="workspace-chat-footer">{followUpInput ?? composer}</div>
+      </> : <>
+        {empty && <div className="chat-start">{welcome}{error}{composer}</div>}
+        {conversation}
+        {!empty && <>{error}{composer}</>}
+      </>}
     </section>
 
-    {empty && session.role === 'demo' && session.visible_versions > 0 && <aside className="examples" aria-labelledby="example-questions">
-      <h2 id="example-questions">Примеры вопросов</h2>
-      <div className="example-grid">
-        {sampleQuestions.map((example) => <button type="button" className="example" key={example.label} onClick={() => {
-          setDraft(example.question)
-          document.getElementById('question-box')?.focus()
-        }}><span>{example.label}</span><ArrowRight size={16} /></button>)}
-      </div>
-    </aside>}
-    {!inlineSources && result && <aside className="evidence-rail" id="answer-sources" aria-label="Основания ответа">
+    {!isWorkspace && examples}
+    {isWorkspace && <aside className="evidence-rail" id="answer-sources" aria-label="Основания ответа">
       <div className="aside-heading"><div><LibraryBig size={19} /><h2>Источники</h2></div>
-        {result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
+        {(isWorkspace || sourceCount > 0) && <span className="number-label">{sourceCount}</span>}
       </div>
       {sources}
     </aside>}
+    {isWorkspace && sourcesOpen && !sourceId && !practice && <Dialog className="workspace-source-drawer" title="Источники" onClose={() => setSourcesOpen(false)}>
+      {sources}
+    </Dialog>}
     {sourceId && <SourceDialog key={sourceId} id={sourceId} onClose={() => setSourceId(null)} />}
     {practice && displayed && <PracticeDialog citation={practice} questionId={displayed.id} onClose={() => setPractice(null)} />}
   </div>

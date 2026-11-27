@@ -41,6 +41,7 @@ export function Documents() {
     {loading && !items.length && <p className="working"><LoaderCircle size={18} className="spin" /> Загружаем документы</p>}
     {!loading && !failure && !items.length && <p className="card list-empty">В этом сеансе нет доступных документов.</p>}
     {items.length > 0 && <div className="document-list card">
+      <div className="document-list-heading"><span>Название документа</span><span>Статус редакции</span></div>
       {items.map((item) => <button type="button" className="document-row" key={item.id} onClick={() => setOpen(item)}>
         <span className="square-icon"><FileText size={19} /></span>
         <span className="document-name"><strong>{item.title}</strong>

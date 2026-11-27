@@ -3,16 +3,19 @@ import { Moon, Sun } from 'lucide-react'
 
 type Theme = 'light' | 'dark'
 
+export function updateThemeColor() {
+  const background = getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim()
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background)
+}
+
 export function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light')
   const isDark = theme === 'dark'
   const action = isDark ? 'Включить светлую тему' : 'Включить тёмную тему'
 
   useLayoutEffect(() => {
-    const root = document.documentElement
-    root.dataset.theme = theme
-    const background = getComputedStyle(root).getPropertyValue('--canvas').trim()
-    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', background)
+    document.documentElement.dataset.theme = theme
+    updateThemeColor()
   }, [theme])
 
   function toggleTheme() {

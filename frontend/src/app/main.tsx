@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useRef, useState } from 'react'
+import { StrictMode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
@@ -11,25 +11,27 @@ import { Quality } from '../features/documents/Quality'
 import { api, describeError, post } from '../shared/api'
 import type { Page, QuestionSummary, Role, Session } from '../shared/api'
 import { Dialog } from '../shared/Dialog'
-import { ThemeToggle } from './ThemeToggle'
+import { ThemeToggle, updateThemeColor } from './ThemeToggle'
 import './styles.css'
 import './layouts.css'
+import './workspace.css'
 
 type Section = 'ask' | 'documents' | 'quality'
 const labels: Record<Section, string> = { ask: 'Чат с агентом', documents: 'Документы', quality: 'Служба качества' }
 const roles: Record<Role, string> = { demo: 'Гость', staff: 'Участник', quality: 'Служба качества' }
 const layouts = [
-  { id: 'columns', name: 'Колонки' },
-  { id: 'window', name: 'Окно' },
-  { id: 'focus', name: 'Весь экран' },
+  { id: 'workspace', name: 'Классический' },
+  { id: 'focus', name: 'Современный' },
 ] as const
 
 function findLayout(id: string | null) {
   return layouts.find((layout) => layout.id === id)
 }
 
+const initialLayout = findLayout(new URLSearchParams(location.search).get('layout'))?.id ?? 'workspace'
+
 function App() {
-  const [layout, setLayout] = useState(() => findLayout(new URLSearchParams(location.search).get('layout'))?.id ?? 'columns')
+  const [layout, setLayout] = useState(initialLayout)
   const [session, setSession] = useState<Session | null>(null)
   const [ready, setReady] = useState<boolean | null>(null)
   const [failure, setFailure] = useState('')
@@ -40,6 +42,11 @@ function App() {
   const [login, setLogin] = useState<'staff' | 'quality' | null>(null)
   const [navOpen, setNavOpen] = useState(false)
   const mainRef = useRef<HTMLElement>(null)
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.layout = layout
+    updateThemeColor()
+  }, [layout])
 
   useEffect(() => {
     mainRef.current?.scrollTo(0, 0)
@@ -126,20 +133,19 @@ function App() {
   const sidebarLabel = layout === 'focus' ? 'Открыть историю чатов' : 'Открыть меню'
 
   return <div className="app-shell" data-layout={layout}>
-    <div className="app-background" aria-hidden="true">
+    {layout !== 'workspace' && <div className="app-background" aria-hidden="true">
       <span className="scene-curve scene-curve-top" />
       <span className="scene-curve scene-curve-bottom" />
-    </div>
+    </div>}
     {navOpen && <button type="button" className="navigation-scrim" aria-label="Закрыть навигацию" onClick={() => setNavOpen(false)} />}
     <header className="topbar">
       <div className="topbar-title">
         <button type="button" className="icon-button sidebar-toggle" aria-label={sidebarLabel} title={sidebarLabel} aria-controls="app-sidebar" aria-expanded={navOpen} onClick={() => setNavOpen(!navOpen)}>
           {layout === 'focus' ? <><PanelLeft size={19} /><span>История</span></> : <Menu size={21} />}
         </button>
-        {layout === 'columns' ? <strong>{labels[section]}</strong> : brand}
+        {layout === 'workspace' ? <strong>{labels[section]}</strong> : brand}
         {layout === 'focus' && <button type="button" className="button topbar-action focus-new-chat" aria-label="Новый чат" title="Новый чат" onClick={startQuestion}><Plus size={18} /><span>Новый чат</span></button>}
       </div>
-      {layout === 'window' && navigation}
       <div className="topbar-actions">
         {ready !== null && <span className={'status-pill ' + (ready ? 'status-ready' : 'status-waiting')}
           title={ready ? 'Агент доступен' : 'Агент недоступен'}><i /><span>{ready ? 'Агент доступен' : 'Агент недоступен'}</span>
@@ -186,11 +192,12 @@ function App() {
       </footer>}
     </aside>
 
-    <main className="main-shell" ref={mainRef}>
+    <main className="main-shell" data-section={section} ref={mainRef}>
       {failure && <p className="alert error app-error" role="alert">{failure}</p>}
       {!session && !failure && <p className="working app-error" role="status"><LoaderCircle size={19} className="spin" /> Открываем рабочую область</p>}
       {session && section === 'ask' && <AskWorkspace key={workspace} session={session} activeId={activeId} onSelect={setActiveId}
-        onLogin={() => setLogin('staff')} onLibrary={() => navigate('documents')} inlineSources={layout === 'focus'} />}
+        onLogin={() => setLogin('staff')} onLibrary={() => navigate('documents')}
+        variant={layout} />}
       {session && section === 'documents' && <Documents key={session.role} />}
       {session?.role === 'quality' && section === 'quality' && <Quality />}
     </main>
@@ -225,4 +232,5 @@ function LoginDialog({ role, onLogin, onClose }: {
   </Dialog>
 }
 
+document.documentElement.dataset.layout = initialLayout
 createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>)
