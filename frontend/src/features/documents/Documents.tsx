@@ -46,7 +46,7 @@ export function Documents() {
         <span className="document-name"><strong>{item.title}</strong>
           <small>{item.kind === 'regulations' ? 'Регламенты' : 'Продукты и лицензирование'} · {formatRevision(item)}</small>
         </span>
-        <span className={item.publication_status === 'published' ? 'tag green' : 'tag amber'}>
+        <span className={item.publication_status === 'published' ? 'tag accent' : 'tag amber'}>
           {item.publication_status === 'published' ? (item.effective_from ? 'С ' + formatDate(item.effective_from) : 'Опубликован') : 'Статус уточняется'}
         </span>
         <ArrowRight size={17} />
