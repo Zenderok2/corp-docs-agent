@@ -1,0 +1,75 @@
+.sidebar {
+  grid-area: auto; position: fixed; inset: var(--shell-inset) auto var(--shell-inset) var(--shell-inset);
+  z-index: 5; width: min(268px, 86vw); visibility: hidden; transform: translateX(-110%);
+  background: var(--glass-solid); transition: transform .22s ease, visibility .22s;
+}
+.sidebar.open { visibility: visible; transform: none; box-shadow: var(--drawer-shadow); }
+.sidebar.open .sidebar-close { display: inline-flex; flex: 0 0 auto; margin-right: -4px; color: var(--muted); }
+.navigation-scrim { display: block; position: fixed; z-index: 4; inset: 0; border: 0; background: var(--scrim); }
+
+/* Full-screen chat layout */
+[data-layout="focus"] {
+  --layout-gap: 8px;
+  --dock-height: 54px;
+  --dock-space: calc(var(--dock-height) + var(--layout-gap) + env(safe-area-inset-bottom, 0px));
+  height: 100dvh; grid-template-areas: "toolbar" "workspace" "dock"; grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: var(--bar-height) minmax(0, 1fr) var(--dock-height);
+  padding-bottom: calc(var(--shell-inset) + env(safe-area-inset-bottom, 0px));
+}
+[data-layout="focus"] .topbar { width: min(100%, 69rem); justify-self: center; border-radius: 25px; }
+[data-layout="focus"] .sidebar-toggle {
+  display: inline-flex; width: auto; padding-inline: 10px; border-radius: 20px; color: var(--accent-deep);
+}
+[data-layout="focus"] .main-shell {
+  align-self: stretch; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-gutter: stable both-edges;
+  scrollbar-color: var(--line-strong) transparent; border: 0; border-radius: 0; background: none; box-shadow: none;
+}
+[data-layout="focus"] .ask-layout {
+  --start-width: 39rem; --chat-width: 46rem;
+  --orb-top: clamp(15px, 4.9dvh, 48px);
+  --orb-size: clamp(8rem, calc(34dvh - 85px), 15rem);
+}
+[data-layout="focus"] .ask-scene { top: 0; }
+[data-layout="focus"] .ask-layout[data-empty="false"] .ask-main {
+  min-height: var(--stage-height); display: flex; flex-direction: column; align-items: center;
+}
+[data-layout="focus"] .pending-box { align-self: flex-start; margin-inline-start: max(0px, (100% - var(--chat-width)) / 2); }
+[data-layout="focus"] .ask-main > .composer { margin-top: auto; }
+[data-layout="focus"] .composer { border-radius: 26px; }
+[data-layout="focus"] .example-grid { gap: 7px; }
+[data-layout="focus"] .example { border-radius: 20px; }
+[data-layout="focus"] .examples h2 { margin-left: 0; text-align: center; }
+.focus-new-chat { margin-inline-start: 9px; }
+.navigation-dock {
+  grid-area: dock; justify-self: center; z-index: 3; width: max-content; max-width: 100%;
+  padding: 5px; border: 1px solid var(--glass-edge); border-radius: 24px;
+  background: var(--glass-raised); backdrop-filter: var(--glass-filter); box-shadow: var(--glass-shadow);
+}
+.navigation-dock .primary-nav { display: flex; align-items: center; gap: 4px; margin: 0; }
+.navigation-dock .primary-nav button {
+  justify-content: center; padding-inline: 11px; white-space: nowrap; border-radius: 18px;
+}
+
+@media (max-width: 740px) {
+  [data-layout="focus"] { --dock-height: 60px; }
+  [data-layout="focus"] .ask-layout { --orb-size: clamp(7.75rem, 21dvh, 11rem); }
+  [data-layout="focus"] .sidebar-toggle { width: 42px; padding: 0; }
+  [data-layout="focus"] .sidebar-toggle span { display: none; }
+  [data-layout="focus"] .focus-new-chat { margin-inline-start: 0; }
+  [data-layout="focus"] .focus-new-chat span { display: none; }
+  .navigation-dock { width: min(100%, 26rem); }
+  .navigation-dock .primary-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .navigation-dock .primary-nav button { flex-direction: column; min-height: 48px; gap: 4px; padding: 5px; font-size: .72rem; }
+  .navigation-dock .primary-nav svg { width: 16px; height: 16px; }
+}
+@media (max-width: 550px) {
+  .topbar .brand strong { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+}
+@media (max-width: 345px) {
+  .topbar .brand img { width: 29px; height: 29px; }
+  .topbar .brand { padding: 0; }
+  .topbar .status-ready, [data-layout="focus"] .focus-new-chat { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none; }
+}

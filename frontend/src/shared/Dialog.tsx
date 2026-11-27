@@ -2,7 +2,9 @@ import { useEffect, useId, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { X } from 'lucide-react'
 
-export function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function Dialog({ title, onClose, children, className }: {
+  title: string; onClose: () => void; children: ReactNode; className?: string
+}) {
   const ref = useRef<HTMLDialogElement>(null)
   const titleId = useId()
   useEffect(() => {
@@ -11,7 +13,7 @@ export function Dialog({ title, onClose, children }: { title: string; onClose: (
     return () => dialog?.close()
   }, [])
   return (
-    <dialog ref={ref} className="dialog" aria-labelledby={titleId} onCancel={(event) => {
+    <dialog ref={ref} className={className ? 'dialog ' + className : 'dialog'} aria-labelledby={titleId} onCancel={(event) => {
       event.preventDefault()
       onClose()
     }} onClick={(event) => { if (event.target === event.currentTarget) onClose() }}>

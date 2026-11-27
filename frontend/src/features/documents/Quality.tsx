@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Check, ClipboardCheck, CornerUpLeft, FileCheck2, LoaderCircle, Mail } from 'lucide-react'
+import { Check, CornerUpLeft, FileCheck2, LoaderCircle, Mail } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, scopeFields } from '../../shared/api'
 import type { Page, PracticeQueueItem, QualityCase } from '../../shared/api'
 import { SourceDialog } from '../sources/SourceDialog'
@@ -57,9 +57,9 @@ export function Quality() {
   const pending = cases.filter((item) => item.status === 'pending').length
   const reports = practices.filter((item) => item.status === 'pending_review').length
   return <section className="content-page">
-    <div className="page-heading"><span className="square-icon"><ClipboardCheck size={22} /></span><div>
+    <header className="page-heading">
       <h1>Служба качества</h1><p>Отвечайте на письма сотрудников и проверяйте примеры применения регламентов.</p>
-    </div></div>
+    </header>
     <div className="tabs" aria-label="Очереди проверки">
       <button type="button" aria-pressed={tab === 'cases'} onClick={() => setTab('cases')}>Входящие письма <span>{pending}</span></button>
       <button type="button" aria-pressed={tab === 'practices'} onClick={() => setTab('practices')}>Примеры применения <span>{reports}</span></button>
@@ -70,7 +70,7 @@ export function Quality() {
       {!loading && !cases.length && <p className="card list-empty">Вопросов на проверку пока нет.</p>}
       {cases.map((item) => <article key={item.id} className="review-card card">
         <header><div><span className="speaker">{formatDate(item.as_of)}{item.role === 'demo' ? ' · Демо' : ''}</span><h3>{item.question}</h3></div>
-          <span className={item.status === 'pending' ? 'tag amber' : 'tag green'}>{caseStatuses[item.status]}</span>
+          <span className={item.status === 'pending' ? 'tag amber' : 'tag accent'}>{caseStatuses[item.status]}</span>
         </header>
         {item.turns.map((turn, index) => <p key={index} className="soft">Уточнение · {turn}</p>)}
         {scopeFields.filter(({ key }) => item.context[key]).map(({ key, label }) => (
@@ -103,7 +103,7 @@ export function Quality() {
       {!loading && !practices.length && <p className="card list-empty">Примеров на проверку пока нет.</p>}
       {practices.map((item) => <article key={item.id} className="review-card card">
         <header><div><span className="speaker">Практика применения</span><h3>{item.title ?? 'Источник недоступен'}</h3></div>
-          <span className={item.status === 'pending_review' ? 'tag amber' : 'tag green'}>{practiceStatuses[item.status]}</span>
+          <span className={item.status === 'pending_review' ? 'tag amber' : 'tag accent'}>{practiceStatuses[item.status]}</span>
         </header>
         <p><strong>Ситуация</strong> {item.situation}</p>
         <p><strong>Действие</strong> {item.action_taken}</p>

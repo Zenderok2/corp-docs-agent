@@ -10,6 +10,8 @@
 !frontend/package-lock.json
 !frontend/tsconfig.json
 !frontend/vite.config.ts
+!frontend/public
+!frontend/public/theme.js
 !frontend/src
 !frontend/src/**
 !infra

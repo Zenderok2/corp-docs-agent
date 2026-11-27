@@ -1,13 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
-  ArrowRight, ArrowUp, BookOpenCheck, Check, ChevronDown, CircleHelp, ClipboardCheck,
-  FileText, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, ScanText, Search, Sparkles,
+  ArrowRight, ArrowUp, Check, ChevronDown, CircleHelp, ClipboardCheck,
+  FileText, FolderOpen, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, Search, Sparkles,
 } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, formatRevision, post, scopeFields } from '../../shared/api'
 import type { Answer, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
+import { Dialog } from '../../shared/Dialog'
 import { MailThread } from '../documents/MailThread'
 import { SourceDialog } from '../sources/SourceDialog'
+import { AgentOrb } from './AgentOrb'
 import { DepartmentComparison } from './DepartmentComparison'
 import { PracticeDialog } from './PracticeDialog'
 
@@ -39,13 +41,15 @@ const explanations: Record<string, string> = {
 
 type Interaction = { id: string }
 
-export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }: {
+export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, variant }: {
   session: Session
   activeId: string | null
   onSelect: (id: string) => void
   onLogin: () => void
   onLibrary: () => void
+  variant: 'focus' | 'workspace'
 }) {
+  const isWorkspace = variant === 'workspace'
   const [draft, setDraft] = useState('')
   const [context, setContext] = useState<Scope>({})
   const [asOf, setAsOf] = useState('')
@@ -53,10 +57,14 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
   const [current, setCurrent] = useState<Question | null>(null)
   const [followUp, setFollowUp] = useState('')
   const [departmentSelection, setDepartmentSelection] = useState<{ id: string; names: string[] } | null>(null)
-  const [sending, setSending] = useState(false)
+  const [submitted, setSubmitted] = useState<{ id: string | null; question: string } | null>(null)
   const [failure, setFailure] = useState('')
   const [sourceId, setSourceId] = useState<string | null>(null)
+  const [sourcesOpen, setSourcesOpen] = useState(false)
   const [practice, setPractice] = useState<Citation | null>(null)
+  const requestInFlight = useRef<AbortController | null>(null)
+
+  useEffect(() => () => requestInFlight.current?.abort(), [])
 
   useEffect(() => {
     if (!activeId) return
@@ -87,12 +95,19 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
   const displayed = current?.id === activeId ? current : null
   const result = displayed?.result && 'outcome' in displayed.result ? displayed.result : null
   const awaiting = Boolean(activeId && !failure && (!displayed || ['queued', 'running'].includes(displayed.status)))
+  const sending = submitted?.id === null
+  const busy = sending || awaiting
+  const empty = !activeId && !sending
+  const thinking = sending || (awaiting && (displayed !== null || submitted?.id === activeId))
+  const pendingQuestion = !displayed && (sending || submitted?.id === activeId) ? submitted?.question : null
   const selectedDepartments = departmentSelection?.id === activeId ? departmentSelection?.names ?? [] : []
 
   async function send(question: string, parent?: string, detail?: QuestionContext) {
-    if (!question.trim() || sending || !session.visible_versions) return
+    if (!question.trim() || requestInFlight.current || !session.visible_versions) return
+    const abort = new AbortController()
+    requestInFlight.current = abort
     setFailure('')
-    setSending(true)
+    setSubmitted({ id: null, question })
     try {
       const path = parent ? '/questions/' + parent + '/follow-ups' : '/questions'
       const departmentNames = context.department?.split(';').map((value) => value.trim()).filter(Boolean) ?? []
@@ -101,15 +116,23 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
         : { question, context: departmentNames.length > 1
           ? { ...context, department: null, departments: departmentNames }
           : { ...context, department: departmentNames[0] ?? null }, as_of: asOf || undefined }
-      const response = await post<Interaction>(path, request, crypto.randomUUID())
+      // getRandomValues also works when the LAN preview is served over HTTP.
+      const randomBytes = crypto.getRandomValues(new Uint8Array(16))
+      const requestKey = Array.from(randomBytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+      const response = await post<Interaction>(path, request, requestKey, abort.signal)
+      if (abort.signal.aborted) return
       setDraft('')
       setFollowUp('')
       setDepartmentSelection(null)
+      setSubmitted({ id: response.id, question })
       onSelect(response.id)
     } catch (error) {
-      setFailure(describeError(error))
+      if (!abort.signal.aborted) {
+        setSubmitted(null)
+        setFailure(describeError(error))
+      }
     } finally {
-      setSending(false)
+      requestInFlight.current = null
     }
   }
 
@@ -118,14 +141,106 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
     void send(draft.trim())
   }
 
-  return <div className="ask-layout">
-    <section className="ask-main" aria-label="Диалог с агентом">
-      {!activeId && <div className="welcome">
-        <div className="welcome-icon"><BookOpenCheck size={30} strokeWidth={1.7} /></div>
-        <h1>Спросите о корпоративном<br className="wide-only" /> процессе</h1>
-        <p>Агент найдёт подходящие положения, покажет точные цитаты и уточнит детали, если ответ зависит от контекста.</p>
+  const error = failure && <p className="alert error" role="alert">{failure}</p>
+  const composer = !session.visible_versions ? (
+    <div className="card no-access">
+      <FileText size={20} />
+      <div><h3>В этом сеансе нет доступных документов</h3>
+        <p>{session.staff_login_available ? 'Войдите с кодом участника, чтобы открыть рабочий корпус.' : 'Корпус появится после импорта.'}</p>
+      </div>
+      {session.staff_login_available && <button className="button primary" onClick={onLogin}>Войти</button>}
+    </div>
+  ) : (isWorkspace || !busy) && !result?.clarification && (
+    <form className="composer card" onSubmit={submit} aria-busy={isWorkspace && busy ? true : undefined}>
+      <label className="visually-hidden" htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
+      <textarea id="question-box" rows={2} value={draft} placeholder="Например, кто согласует план проекта?" required minLength={4} maxLength={800}
+        aria-keyshortcuts="Control+Enter Meta+Enter" disabled={isWorkspace && busy}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing && draft.trim().length >= 4) {
+            event.preventDefault()
+            void send(draft.trim())
+          }
+        }}
+      />
+      {expanded && !(isWorkspace && busy) && <div className="context-fields">
+        {scopeFields.map(({ key, label }) => <label key={key}>{label}<input type="text" value={context[key] ?? ''} maxLength={160}
+          placeholder={key === 'department' ? 'Можно через точку с запятой' : undefined}
+          onChange={(event) => setContext({ ...context, [key]: event.target.value || null })} /></label>)}
+        <label>Дата применимости<input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} /></label>
       </div>}
+      <div className="composer-actions">
+        <button type="button" className="button text-button" aria-expanded={expanded && !(isWorkspace && busy)}
+          disabled={isWorkspace && busy} onClick={() => setExpanded(!expanded)}>
+          <ListFilter size={17} /> Указать контекст <ChevronDown size={14} className={expanded ? 'flipped' : ''} />
+        </button>
+        <div className="composer-submit">
+          <kbd>Ctrl + Enter</kbd>
+          <button type="submit" className="button primary" disabled={busy || draft.trim().length < 4}>
+            {isWorkspace && busy ? <>{sending ? 'Отправляем…' : 'Обработка…'} <LoaderCircle className="spin" size={16} /></>
+              : <>Спросить <ArrowUp size={17} /></>}
+          </button>
+        </div>
+      </div>
+    </form>
+  )
 
+  const sources = <>
+    {result?.citations.length ? <div className="evidence-list">
+      {result.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
+        <button type="button" className="source-link" onClick={() => setSourceId(citation.id)}>
+          <span className="source-number">{index + 1}</span>
+          <span><strong>{citation.title}</strong><small>{formatLocator(citation.locator)} · {formatRevision(citation)}</small></span>
+          <ArrowRight size={16} className="source-arrow" />
+        </button>
+        <blockquote>{citation.quote}</blockquote>
+        <button type="button" className="button text-button practice-link" onClick={() => setPractice(citation)}>
+          <MessageSquarePlus size={15} /> Добавить пример применения
+        </button>
+      </div>)}
+    </div> : <>
+      <p className="evidence-empty">{result ? 'К этому ответу нет цитат.' : 'Цитаты появятся после ответа.'}</p>
+      {session.visible_versions > 0 && <button className="catalog-link" type="button" onClick={onLibrary}>
+        <FolderOpen size={18} />
+        <span><strong>Открыть каталог</strong><small>Доступно редакций · {session.visible_versions}</small></span>
+        <ArrowRight size={16} />
+      </button>}
+    </>}
+    {result && <Trace answer={result} />}
+  </>
+
+  const followUpInput = displayed && result?.clarification ? <form className="follow-up-form" onSubmit={(event) => {
+    event.preventDefault()
+    const field = result.clarification?.field
+    const value = followUp.trim()
+    void send(value, displayed.id, field && field !== 'department' ? { [field]: value } : {})
+  }}>
+    <input aria-label="Ответ на уточняющий вопрос" placeholder="Введите уточнение" required
+      maxLength={result.clarification.field ? 160 : 800} value={followUp}
+      disabled={isWorkspace && sending} onChange={(event) => setFollowUp(event.target.value)} />
+    <button className="button primary" type="submit" disabled={sending || !followUp.trim()} aria-label="Отправить уточнение"><ArrowUp size={19} /></button>
+  </form> : null
+
+  const welcome = <header className="welcome">
+    <h1>{isWorkspace ? 'Новый чат' : 'Поиск по регламентам'}</h1>
+    <p>{isWorkspace ? 'Спросите о корпоративных правилах и проверьте ответ по цитатам из документов.'
+      : 'Спросите о рабочей ситуации и получите ответ со ссылками на документы.'}</p>
+  </header>
+
+  const examples = empty && session.role === 'demo' && session.visible_versions > 0 && <aside className="examples" aria-labelledby="example-questions">
+    <h2 id="example-questions">Примеры вопросов</h2>
+    <div className="example-grid">
+      {sampleQuestions.map((example) => <button type="button" className="example" key={example.label} onClick={() => {
+        setDraft(example.question)
+        document.getElementById('question-box')?.focus()
+      }}><span>{example.label}</span><ArrowRight size={16} /></button>)}
+    </div>
+  </aside>
+
+  const conversation = <>
+      {pendingQuestion && <div className="conversation">
+        <div className="question-bubble"><span className="speaker">Ваш вопрос</span><p>{pendingQuestion}</p></div>
+      </div>}
       {displayed && <div className="conversation">
         <div className="question-bubble">
           <span className="speaker">Ваш вопрос</span>
@@ -139,6 +254,14 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
           <p className="alert error" role="alert">{describeError(displayed.result.error_code)}</p>
         )}
         {result && <AnswerPanel answer={result} openSource={setSourceId} />}
+        {!isWorkspace && result && <details className="card evidence-disclosure">
+          <summary>
+            <LibraryBig size={17} /> Источники ответа
+            {result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
+            <ChevronDown className="evidence-chevron" size={16} />
+          </summary>
+          <div className="evidence-disclosure-body">{sources}</div>
+        </details>}
         {result?.clarification && <div className="clarification">
           <div className="clarification-title"><CircleHelp size={19} /><h3>{result.clarification.question}</h3></div>
           {result.clarification.field === 'department' && result.clarification.options.length > 0 ? <div className="department-options">
@@ -167,98 +290,55 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary }
               )}>{option}<ArrowRight size={15} /></button>
             })}
           </div>}
-          <form className="follow-up-form" onSubmit={(event) => {
-            event.preventDefault()
-            const field = result.clarification?.field
-            const value = followUp.trim()
-            void send(value, displayed.id, field && field !== 'department' ? { [field]: value } : {})
-          }}>
-            <input aria-label="Ответ на уточняющий вопрос" placeholder="Введите уточнение" required maxLength={result.clarification.field ? 160 : 800} value={followUp} onChange={(event) => setFollowUp(event.target.value)} />
-            <button className="button primary" type="submit" disabled={sending || !followUp.trim()} aria-label="Отправить уточнение"><ArrowUp size={19} /></button>
-          </form>
+          {!isWorkspace && followUpInput}
         </div>}
       </div>}
 
-      {awaiting && <div className="pending-box" role="status">
-        <span className="square-icon"><LoaderCircle className="spin" size={19} /></span>
-        <div><strong>{displayed?.status === 'running' ? 'Агент сверяет источники' : 'Вопрос принят'}</strong>
-          <p>{displayed?.status === 'running' ? 'Ищем основания и проверяем цитаты.' : 'Вопрос появится здесь, когда начнётся обработка.'}</p>
-        </div>
+      {busy && <div className="pending-box" role="status">
+        {isWorkspace ? <LoaderCircle className="spin" size={17} /> : <img src="/agent-mark.png" width="28" height="28" alt="" />}
+        <strong>{sending ? 'Отправляем вопрос' : displayed?.status === 'running' ? 'Агент сверяет источники'
+          : thinking ? 'Вопрос принят' : 'Открываем чат'}</strong>
       </div>}
-      {failure && <p className="alert error" role="alert">{failure}</p>}
+  </>
 
-      {!session.visible_versions ? (
-        <div className="card no-access">
-          <FileText size={20} />
-          <div><h3>В этом сеансе нет доступных документов</h3>
-            <p>{session.staff_login_available ? 'Войдите с кодом участника, чтобы открыть рабочий корпус.' : 'Корпус появится после импорта.'}</p>
-          </div>
-          {session.staff_login_available && <button className="button primary" onClick={onLogin}>Войти</button>}
+  const sourceCount = result?.citations.length ?? 0
+  return <div className="ask-layout" data-empty={empty}>
+    {!isWorkspace && <div className="ask-scenery" aria-hidden="true">
+      <div className="ask-scene">
+        <AgentOrb thinking={thinking} />
+      </div>
+    </div>}
+    <section className="ask-main" aria-label="Диалог с агентом">
+      {isWorkspace ? <>
+        <div className="workspace-chat-tools">
+          <button type="button" className="button secondary" aria-haspopup="dialog" onClick={() => setSourcesOpen(true)}>
+            <LibraryBig size={16} /> Источники <span className="number-label">{sourceCount}</span>
+          </button>
         </div>
-      ) : !awaiting && !result?.clarification && (
-        <form className="composer card" onSubmit={submit}>
-          <label htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
-          <textarea id="question-box" rows={3} value={draft} placeholder="Например, кто подписывает агентский договор?" required minLength={4} maxLength={800}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && draft.trim().length >= 4) {
-                event.preventDefault()
-                void send(draft.trim())
-              }
-            }}
-          />
-          {expanded && <div className="context-fields">
-            {scopeFields.map(({ key, label }) => <label key={key}>{label}<input type="text" value={context[key] ?? ''} maxLength={160}
-              placeholder={key === 'department' ? 'Можно через точку с запятой' : undefined}
-              onChange={(event) => setContext({ ...context, [key]: event.target.value || null })} /></label>)}
-            <label>Дата применимости<input type="date" value={asOf} onChange={(event) => setAsOf(event.target.value)} /></label>
-          </div>}
-          <div className="composer-actions">
-            <button type="button" className="button text-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
-              <ListFilter size={17} /> Указать контекст <ChevronDown size={14} className={expanded ? 'flipped' : ''} />
-            </button>
-            <button type="submit" className="button primary" disabled={sending || draft.trim().length < 4}>
-              {sending ? 'Отправляем…' : 'Спросить'}<ArrowUp size={17} />
-            </button>
+        <div className="workspace-chat-scroll" tabIndex={0} role="region" aria-label="Сообщения">
+          <div className="workspace-chat-body">
+            {empty ? <>{welcome}{examples}</> : conversation}
+            {error}
           </div>
-        </form>
-      )}
-      {!activeId && session.role === 'demo' && session.visible_versions > 0 && <div className="examples">
-        <h2>Попробуйте на примерах</h2>
-        <div className="example-grid">
-          {sampleQuestions.map((example) => <button type="button" className="example card" key={example.label} onClick={() => {
-            setDraft(example.question)
-            document.getElementById('question-box')?.focus()
-          }}><span>{example.label}</span><ArrowRight size={16} /></button>)}
         </div>
-      </div>}
+        <div className="workspace-chat-footer">{followUpInput ?? composer}</div>
+      </> : <>
+        {empty && <div className="chat-start">{welcome}{error}{composer}</div>}
+        {conversation}
+        {!empty && <>{error}{composer}</>}
+      </>}
     </section>
 
-    <aside className="evidence-rail" aria-label="Основания ответа">
+    {!isWorkspace && examples}
+    {isWorkspace && <aside className="evidence-rail" id="answer-sources" aria-label="Основания ответа">
       <div className="aside-heading"><div><LibraryBig size={19} /><h2>Источники</h2></div>
-        {result && result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
+        {(isWorkspace || sourceCount > 0) && <span className="number-label">{sourceCount}</span>}
       </div>
-      {result && result.citations.length > 0 ? <div className="evidence-list">
-        {result.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
-          <button type="button" className="source-link" onClick={() => setSourceId(citation.id)}>
-            <span className="source-number">{index + 1}</span>
-            <span><strong>{citation.title}</strong><small>{formatLocator(citation.locator)} · {formatRevision(citation)}</small></span>
-            <ArrowRight size={16} className="source-arrow" />
-          </button>
-          <blockquote>{citation.quote}</blockquote>
-          <button type="button" className="button text-button practice-link" onClick={() => setPractice(citation)}>
-            <MessageSquarePlus size={15} /> Добавить пример применения
-          </button>
-        </div>)}
-      </div> : <div className="evidence-empty">
-        <div className="evidence-illustration"><ScanText size={31} strokeWidth={1.5} /></div>
-        <p>{result ? 'Цитаты в этом ответе отсутствуют.' : 'Здесь появятся пункты документов, на которые опирается ответ.'}</p>
-        {session.visible_versions > 0 && <button className="button text-button" type="button" onClick={onLibrary}>
-          Открыть документы <ArrowRight size={15} />
-        </button>}
-      </div>}
-      {result && <Trace answer={result} />}
-    </aside>
+      {sources}
+    </aside>}
+    {isWorkspace && sourcesOpen && !sourceId && !practice && <Dialog className="workspace-source-drawer" title="Источники" onClose={() => setSourcesOpen(false)}>
+      {sources}
+    </Dialog>}
     {sourceId && <SourceDialog key={sourceId} id={sourceId} onClose={() => setSourceId(null)} />}
     {practice && displayed && <PracticeDialog citation={practice} questionId={displayed.id} onClose={() => setPractice(null)} />}
   </div>

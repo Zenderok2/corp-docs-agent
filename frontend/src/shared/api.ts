@@ -207,9 +207,9 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export function post<T>(path: string, data: unknown, idempotencyKey?: string): Promise<T> {
+export function post<T>(path: string, data: unknown, idempotencyKey?: string, signal?: AbortSignal): Promise<T> {
   return api<T>(path, {
-    method: 'POST', body: JSON.stringify(data),
+    method: 'POST', body: JSON.stringify(data), signal,
     headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
   })
 }
