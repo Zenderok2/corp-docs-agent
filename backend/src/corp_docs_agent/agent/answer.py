@@ -256,6 +256,7 @@ class AnswerWorker:
                     assessment, candidates, department_versions, semantic_support, referenced_set, usage, introductions,
                     started + getattr(self.chat, "timeout", 90.0),
                 )
+                review_partial = outcome == "partial" and all(department_refs.values())
             else:
                 decision, chat_usage = self.chat.decide(assessment)
                 add_chat_usage(usage, chat_usage)
@@ -301,7 +302,9 @@ class AnswerWorker:
         verification_started = monotonic()
         if message_code == "partial" and review_partial:
             deadline = started + getattr(self.chat, "timeout", 90.0)
-            confirmed = self.confirm_coverage(question["question"], context, evidence, candidates, usage, deadline)
+            confirmed = self.confirm_coverage(
+                question["question"], context, evidence, candidates, department_refs, usage, deadline,
+            )
             if confirmed:
                 evidence = confirmed
                 outcome = message_code = "answered"
@@ -323,7 +326,7 @@ class AnswerWorker:
 
     def confirm_coverage(
         self, question: str, context: dict, evidence: list[tuple[Candidate, int, int]],
-        candidates: list[Candidate], usage: dict, deadline: float,
+        candidates: list[Candidate], department_refs: dict[str, list[int]], usage: dict, deadline: float,
     ) -> list[tuple[Candidate, int, int]] | None:
         remaining = deadline - monotonic()
         if remaining < 3 or not evidence:
@@ -332,14 +335,19 @@ class AnswerWorker:
         if any(source.missing_scope for source in sources) or not topic_supported(question, [item.topic_text() for item in sources]):
             return None
         timeout = min(COVERAGE_BUDGET_SECONDS, remaining)
-        if any(source.locator.get("column_header") for source in sources):
+        if not department_refs and any(source.locator.get("column_header") for source in sources):
             return self.confirm_table_coverage(question, context, sources, candidates, usage, timeout)
         if not hasattr(self.chat, "check_coverage"):
             return None
         checks = {
             "question": question, "context": context,
-            "citations": [{"text": source.text, "column_header": source.locator.get("column_header"),
-                           "scope": source.version.metadata["scope"]} for source in sources],
+            "citations": [
+                {"text": source.text, "column_header": source.locator.get("column_header"),
+                 "scope": source.version.metadata["scope"],
+                 **({"departments": [name for name, refs in department_refs.items() if index in refs]}
+                    if department_refs else {})}
+                for index, source in enumerate(sources)
+            ],
         }
         try:
             coverage, call_usage = self.chat.check_coverage(checks, timeout)

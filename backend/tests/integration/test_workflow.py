@@ -121,15 +121,18 @@ def test_department_variants_complex_projects_and_glossary(settings, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("engineering_timing", "has_comparison"),
+    ("engineering_timing", "has_comparison", "engineering_outcome"),
     [
-        ("за 10 календарных дней до согласования сметы", True),
-        ("за 10 календарных дней", False),
-        ("за 10 календарных дней до согласования сметы и за 12 календарных дней до начала работ", False),
+        ("за 10 календарных дней до согласования сметы", True, "answered"),
+        ("за 10 календарных дней", False, "answered"),
+        ("за 10 календарных дней до согласования сметы и за 12 календарных дней до начала работ", False, "answered"),
+        ("за 10 календарных дней до согласования сметы", True, "partial"),
     ],
-    ids=["comparison", "missing_anchor", "multiple_deadlines"],
+    ids=["comparison", "missing_anchor", "multiple_deadlines", "department_coverage"],
 )
-def test_complex_project_compares_deadlines_from_confirmed_sources(settings, tmp_path, engineering_timing, has_comparison):
+def test_complex_project_compares_deadlines_from_confirmed_sources(
+    settings, tmp_path, engineering_timing, has_comparison, engineering_outcome,
+):
     implementation = "Дирекция внедрения"
     engineering = "Проектное бюро"
     condition = "При нарушении срока её возвращают на согласование."
@@ -151,9 +154,19 @@ def test_complex_project_compares_deadlines_from_confirmed_sources(settings, tmp
 
     class DeadlineChat(ScriptedChat):
         def decide(self, data, *, timeout=None):
-            rule = rules[data["focus_department"]]
+            department = data["focus_department"]
+            rule = rules[department]
             ref = next(source["ref"] for source in data["sources"] if source["text"] == rule)
-            return Decision(outcome="answered", evidence=[ref], clarification=""), {}
+            outcome = engineering_outcome if department == engineering else "answered"
+            return Decision(outcome=outcome, evidence=[ref], clarification=""), {}
+
+        def check_coverage(self, data, timeout):
+            assert engineering_outcome == "partial"
+            assert data["context"]["departments"] == list(rules)
+            assert [(item["text"], item["departments"]) for item in data["citations"]] == [
+                (rule, [department]) for department, rule in rules.items()
+            ]
+            return Coverage(complete=True), {}
 
     with TestClient(create_app(settings, DeadlineChat())) as client:
         client.get("/api/v1/session")
