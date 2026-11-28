@@ -12,6 +12,7 @@
 !frontend/vite.config.ts
 !frontend/public
 !frontend/public/theme.js
+!frontend/public/agent-mark.png
 !frontend/src
 !frontend/src/**
 !infra
