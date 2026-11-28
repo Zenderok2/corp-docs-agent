@@ -129,6 +129,10 @@ export type Question = QuestionSummary & {
   result: Answer | { error_code: string; latency_ms: number } | null
 }
 
+export type ChatSummary = { id: string; title: string }
+
+export type Chat = ChatSummary & { messages: Question[] }
+
 export type QualityCase = {
   id: string
   created_at?: string
@@ -166,7 +170,7 @@ const problem: Record<string, string> = {
   invalid_request: 'Проверьте обязательные поля и длину текста.',
   session_required: 'Сеанс завершился. Обновите страницу.',
   invalid_access_code: 'Код доступа не подошёл.',
-  mail_thread_changed: 'В цепочке появилось новое письмо. Обновите страницу перед ответом.',
+  mail_thread_changed: 'В цепочке появилось новое письмо. Проверьте обновлённую переписку перед ответом.',
   login_throttled: 'Слишком много попыток. Повторите через минуту.',
   empty_corpus: 'В этом сеансе нет доступных документов.',
   queue_full: 'Агент уже обрабатывает несколько вопросов. Повторите чуть позже.',
@@ -176,6 +180,7 @@ const problem: Record<string, string> = {
   invalid_model_response: 'Ответ модели не удалось обработать. Попробуйте задать вопрос иначе.',
   unverified_evidence: 'Модель предложила фрагмент, который не удалось сверить с источником. Попробуйте уточнить вопрос.',
   question_not_found: 'В этом сеансе вопрос недоступен.',
+  chat_not_found: 'Чат удалён или недоступен в этом сеансе.',
   citation_not_found: 'Цитата недоступна.',
   document_not_found: 'Документ недоступен.',
   quality_access_required: 'Для этого действия нужен доступ службы качества.',
@@ -184,7 +189,7 @@ const problem: Record<string, string> = {
   quality_corpus_changed: 'После разбора запроса документы обновились. Для публикации нужен новый вопрос по текущему корпусу.',
   quality_deadline_changed: 'В ответе изменён срок из найденного пункта. Откройте цитату и сверьте срок с регламентом.',
   invalid_effective_date: 'Дата окончания не может предшествовать дате запроса.',
-  practice_already_submitted: 'По этой цитате вы уже отправили пример.',
+  practice_already_submitted: 'По этой цитате вы уже отправили случай из практики.',
 }
 
 export function describeError(error: unknown): string {
@@ -208,7 +213,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     const error = await response.json().catch(() => null) as { detail?: string } | null
     throw new ApiError(error?.detail ?? 'request_failed')
   }
-  return response.json() as Promise<T>
+  return response.status === 204 ? undefined as T : response.json() as Promise<T>
 }
 
 export function post<T>(path: string, data: unknown, idempotencyKey?: string, signal?: AbortSignal): Promise<T> {

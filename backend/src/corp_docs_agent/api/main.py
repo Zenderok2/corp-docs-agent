@@ -14,10 +14,10 @@ from fastapi.responses import JSONResponse
 from corp_docs_agent.agent.answer import AnswerWorker, MAX_FOLLOW_UPS
 from corp_docs_agent.api.auth import COOKIE, LoginAttempts, Principal, Sessions
 from corp_docs_agent.api.records import (
-    EVIDENCE_SQL, encode_citation, encode_question, enqueue, fail, owned_question,
+    EVIDENCE_SQL, chat_messages, encode_citation, encode_question, enqueue, fail, owned_chat, owned_question,
 )
 from corp_docs_agent.core.settings import Settings
-from corp_docs_agent.domain.models import Ask, CaseReview, FollowUp, Login, PracticeReport, PracticeReview
+from corp_docs_agent.domain.models import Ask, CaseReview, ChatRename, FollowUp, Login, PracticeReport, PracticeReview
 from corp_docs_agent.persistence.quality_answers import changes_known_deadline, publication_block
 from corp_docs_agent.persistence.quality_mail import as_eml, mail_thread, recover_pending_mail, send_reply
 from corp_docs_agent.persistence.store import Store, corpus_revision, json_dump, now, visible_versions
@@ -188,7 +188,8 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
             result = enqueue(
                 conn, settings, user, question=data.question, turns=[], context=data.context.stored(),
                 as_of=data.as_of or datetime.now(MOSCOW).date(), document_ids=sorted(set(data.document_ids)),
-                parent=None, idempotency_key=idempotency_key, request_body=data.model_dump_json(),
+                parent=None, idempotency_key=idempotency_key, chat_id=data.chat_id,
+                request_body=data.model_dump_json(exclude={"chat_id"} if data.chat_id is None else None),
             )
         worker.wakeup.set()
         return result
@@ -200,13 +201,47 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
         with store.connect() as conn:
             rows = conn.execute(
                 """SELECT q.id, q.parent_id, q.question, q.status, q.created_at FROM questions q
-                WHERE q.principal = ? AND q.role = ? AND q.id = (
+                JOIN chat_roots r ON r.root_id = q.root_id JOIN chats c ON c.id = r.chat_id
+                WHERE q.principal = ? AND q.role = ? AND c.deleted_at IS NULL AND q.id = (
                   SELECT f.id FROM questions f WHERE f.root_id = q.root_id AND f.principal = q.principal
                   ORDER BY f.created_at DESC, f.rowid DESC LIMIT 1
                 ) ORDER BY q.created_at DESC, q.rowid DESC LIMIT ?""",
                 (user.id, user.role, limit),
             )
             return {"items": [dict(row) for row in rows]}
+
+    @app.get("/api/v1/chats")
+    def chats(user: Principal = Depends(principal)) -> dict:
+        with store.connect() as conn:
+            rows = conn.execute(
+                """SELECT c.id, c.title FROM chats c JOIN questions owner ON owner.id = c.id
+                JOIN chat_roots r ON r.chat_id = c.id JOIN questions q ON q.root_id = r.root_id
+                WHERE owner.principal = ? AND owner.role = ? AND c.deleted_at IS NULL
+                GROUP BY c.id ORDER BY max(q.rowid) DESC""",
+                (user.id, user.role),
+            )
+            return {"items": [dict(row) for row in rows]}
+
+    @app.get("/api/v1/chats/{chat_id}")
+    def get_chat(chat_id: str, user: Principal = Depends(principal)) -> dict:
+        with store.connect() as conn:
+            chat = owned_chat(conn, chat_id, user)
+            return {**dict(chat), "messages": chat_messages(conn, chat_id)}
+
+    @app.patch("/api/v1/chats/{chat_id}")
+    def rename_chat(chat_id: str, data: ChatRename, user: Principal = Depends(principal)) -> dict:
+        with store.connect(write=True) as conn:
+            owned_chat(conn, chat_id, user)
+            conn.execute("UPDATE chats SET title = ? WHERE id = ?", (data.title, chat_id))
+            return {"id": chat_id, "title": data.title}
+
+    @app.delete("/api/v1/chats/{chat_id}", status_code=204)
+    def delete_chat(chat_id: str, user: Principal = Depends(principal)) -> Response:
+        with store.connect(write=True) as conn:
+            owned_chat(conn, chat_id, user)
+            # An escalated question can still belong to a quality mail thread.
+            conn.execute("UPDATE chats SET deleted_at = ? WHERE id = ?", (now(), chat_id))
+        return Response(status_code=204)
 
     @app.get("/api/v1/questions/{question_id}")
     def get_question(question_id: str, user: Principal = Depends(principal)) -> dict:
@@ -243,7 +278,8 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
         with store.connect() as conn:
             row = conn.execute(
                 EVIDENCE_SQL + """ JOIN questions q ON q.id = s.question_id
-                WHERE s.id = ? AND ((q.principal = ? AND q.role = ?) OR ? = 'quality')""",
+                JOIN chat_roots r ON r.root_id = q.root_id JOIN chats chat ON chat.id = r.chat_id
+                WHERE s.id = ? AND ((q.principal = ? AND q.role = ? AND chat.deleted_at IS NULL) OR ? = 'quality')""",
                 (citation_id, user.id, user.role, user.role),
             ).fetchone()
             versions = visible_versions(conn, user.role, for_review=user.role == "quality")

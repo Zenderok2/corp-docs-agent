@@ -20,7 +20,9 @@ def fail(status: int, code: str) -> None:
 
 def owned_question(conn: sqlite3.Connection, question_id: str, user: Principal) -> sqlite3.Row:
     row = conn.execute(
-        "SELECT * FROM questions WHERE id = ? AND principal = ? AND role = ?",
+        """SELECT q.*, r.chat_id FROM questions q JOIN chat_roots r ON r.root_id = q.root_id
+        JOIN chats c ON c.id = r.chat_id
+        WHERE q.id = ? AND q.principal = ? AND q.role = ? AND c.deleted_at IS NULL""",
         (question_id, user.id, user.role),
     ).fetchone()
     if row is None:
@@ -28,22 +30,41 @@ def owned_question(conn: sqlite3.Connection, question_id: str, user: Principal) 
     return row
 
 
+def owned_chat(conn: sqlite3.Connection, chat_id: str, user: Principal) -> sqlite3.Row:
+    row = conn.execute(
+        """SELECT c.id, c.title FROM chats c JOIN questions q ON q.id = c.id
+        WHERE c.id = ? AND q.principal = ? AND q.role = ? AND c.deleted_at IS NULL""",
+        (chat_id, user.id, user.role),
+    ).fetchone()
+    if row is None:
+        fail(404, "chat_not_found")
+    return row
+
+
 def enqueue(
     conn: sqlite3.Connection, settings: Settings, user: Principal, *,
     question: str, turns: list[str], context: dict, as_of: date, document_ids: list[str],
-    parent: sqlite3.Row | None, idempotency_key: str | None, request_body: str,
+    parent: sqlite3.Row | None, idempotency_key: str | None, request_body: str, chat_id: str | None = None,
 ) -> dict:
     request_key = idempotency_key or uuid4().hex
     parent_id = parent["id"] if parent else None
     fingerprint = sha256(json_dump([parent_id, request_body]).encode()).hexdigest()
     existing = conn.execute(
-        "SELECT id, status, fingerprint, role FROM questions WHERE principal = ? AND idempotency_key = ?",
+        """SELECT q.id, q.status, q.fingerprint, q.role, r.chat_id, c.deleted_at
+        FROM questions q JOIN chat_roots r ON r.root_id = q.root_id JOIN chats c ON c.id = r.chat_id
+        WHERE q.principal = ? AND q.idempotency_key = ?""",
         (user.id, request_key),
     ).fetchone()
     if existing:
         if existing["role"] != user.role or existing["fingerprint"] != fingerprint:
             fail(409, "idempotency_conflict")
-        return {"id": existing["id"], "status": existing["status"]}
+        if existing["deleted_at"]:
+            fail(404, "chat_not_found")
+        return {"id": existing["id"], "status": existing["status"], "chat_id": existing["chat_id"]}
+    if parent:
+        chat_id = parent["chat_id"]
+    elif chat_id:
+        owned_chat(conn, chat_id, user)
     visible = visible_versions(conn, user.role)
     if document_ids and (set(document_ids) - {version.document_id for version in visible.values()}):
         fail(404, "document_not_found")
@@ -65,7 +86,12 @@ def enqueue(
          request_key, fingerprint, question, json_dump(turns), json_dump(context), json_dump(document_ids),
          as_of.isoformat(), now()),
     )
-    return {"id": question_id, "status": "queued"}
+    if not parent:
+        if not chat_id:
+            chat_id = question_id
+            conn.execute("INSERT INTO chats (id, title) VALUES (?, ?)", (chat_id, question[:160]))
+        conn.execute("INSERT INTO chat_roots (root_id, chat_id) VALUES (?, ?)", (question_id, chat_id))
+    return {"id": question_id, "status": "queued", "chat_id": chat_id}
 
 
 EVIDENCE_SQL = """
@@ -127,12 +153,16 @@ def department_comparison(departments: list[dict], citations: dict[str, sqlite3.
     return comparison
 
 
-def encode_question(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
-    payload = {
+def question_payload(row: sqlite3.Row) -> dict:
+    return {
         "id": row["id"], "parent_id": row["parent_id"], "status": row["status"], "question": row["question"],
         "turns": json.loads(row["turns"]), "context": json.loads(row["context"]), "as_of": row["as_of"],
         "created_at": row["created_at"], "result": None,
     }
+
+
+def encode_question(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+    payload = question_payload(row)
     if not row["result"]:
         return payload
     result = json.loads(row["result"])
@@ -186,3 +216,24 @@ def encode_question(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         result["corpus_changed"] = result["corpus_revision"] != revision
     payload["result"] = result
     return payload
+
+
+def chat_messages(conn: sqlite3.Connection, chat_id: str) -> list[dict]:
+    rows = conn.execute(
+        """SELECT latest.* FROM chat_roots r JOIN questions root ON root.id = r.root_id
+        JOIN questions latest ON latest.id = (
+            SELECT q.id FROM questions q WHERE q.root_id = root.id ORDER BY q.created_at DESC, q.rowid DESC LIMIT 1
+        ) WHERE r.chat_id = ? ORDER BY root.rowid""",
+        (chat_id,),
+    )
+    messages = []
+    for row in rows:
+        try:
+            messages.append(encode_question(conn, row))
+        except HTTPException as error:
+            if error.detail != "source_access_changed":
+                raise
+            messages.append({
+                **question_payload(row), "status": "failed", "result": {"error_code": error.detail, "latency_ms": 0},
+            })
+    return messages

@@ -476,6 +476,9 @@ def test_dialog_citations_and_practice_survive_restart(settings):
         answer_id = follow_up.json()["id"]
         answer = wait_question(client, answer_id)["result"]
         assert answer["outcome"] == "answered"
+        assert follow_up.json()["chat_id"] == first
+        messages = client.get(f"/api/v1/chats/{first}").json()["messages"]
+        assert [(item["id"], item["turns"]) for item in messages] == [(answer_id, ["Маяк Север"])]
         assert len({source["document_version_id"] for source in answer["citations"]}) == 2
         citation = answer["citations"][0]
         detail = client.get(citation["source_url"]).json()
@@ -501,6 +504,53 @@ def test_dialog_citations_and_practice_survive_restart(settings):
         restarted.cookies.clear()
         restarted.cookies.set("corp_docs_session", saved_cookie)
         assert wait_question(restarted, answer_id)["result"]["practices"][0]["situation"] == note["situation"]
+
+
+def test_chat_continuation_and_history_management(settings):
+    question = "Какая премия за мою сделку?"
+    with TestClient(create_app(settings, ScriptedChat())) as client:
+        client.get("/api/v1/session")
+        first = client.post("/api/v1/questions", json={"question": question}).json()
+        chat_id = first["chat_id"]
+        path = f"/api/v1/chats/{chat_id}"
+        wait_question(client, first["id"])
+        continuation = {"question": GAP_QUESTION, "chat_id": chat_id}
+        headers = {"Idempotency-Key": "continue-chat"}
+        second = client.post("/api/v1/questions", json=continuation, headers=headers).json()
+        assert second["chat_id"] == chat_id
+        assert client.post("/api/v1/questions", json=continuation, headers=headers).json()["id"] == second["id"]
+        quality_case = wait_question(client, second["id"])["result"]["quality_case"]
+        other = client.post("/api/v1/questions", json={"question": question}).json()
+        assert other["chat_id"] != chat_id
+        wait_question(client, other["id"])
+        assert client.patch(path, json={"title": "  Рабочие вопросы  "}).json()["title"] == "Рабочие вопросы"
+        assert client.patch(path, json={"title": "   "}).status_code == 422
+        owner_cookie = client.cookies.get("corp_docs_session")
+        client.cookies.clear()
+        client.get("/api/v1/session")
+        assert client.get(path).status_code == 404
+        assert client.patch(path, json={"title": "Чужой чат"}).status_code == 404
+        assert client.delete(path).status_code == 404
+        assert client.post("/api/v1/questions", json=continuation).status_code == 404
+
+    with TestClient(create_app(settings, ScriptedChat())) as restarted:
+        restarted.cookies.set("corp_docs_session", owner_cookie)
+        assert restarted.get("/api/v1/chats").json()["items"] == [
+            {"id": other["chat_id"], "title": question}, {"id": chat_id, "title": "Рабочие вопросы"},
+        ]
+        chat = restarted.get(path).json()
+        assert chat["title"] == "Рабочие вопросы"
+        assert [item["question"] for item in chat["messages"]] == [question, GAP_QUESTION]
+        assert [item["id"] for item in chat["messages"]] == [first["id"], second["id"]]
+        assert restarted.delete(path).status_code == 204
+        assert restarted.get(path).status_code == 404
+        assert restarted.get(f"/api/v1/questions/{second['id']}").status_code == 404
+        assert restarted.post("/api/v1/questions", json=continuation, headers=headers).status_code == 404
+        assert restarted.get("/api/v1/chats").json()["items"] == [{"id": other["chat_id"], "title": question}]
+        restarted.post("/api/v1/session", json={"role": "quality", "code": "quality-test"})
+        case, = restarted.get("/api/v1/quality/cases").json()["items"]
+        assert case["id"] == quality_case["id"] and case["status"] == "pending"
+        assert len(case["mail"]) == 1
 
 
 def test_gap_approved_answer_and_withdrawal(settings):
@@ -721,11 +771,18 @@ def test_pending_mail_is_migrated_once(settings):
         client.get("/api/v1/session")
         question_id = client.post("/api/v1/questions", json={"question": GAP_QUESTION}).json()["id"]
         case = wait_question(client, question_id)["result"]["quality_case"]
+        owner_cookie = client.cookies.get("corp_docs_session")
     with Store(settings.database).connect(write=True) as conn:
         conn.execute("DROP TABLE quality_mail")
+        conn.execute("DROP TABLE chat_roots")
+        conn.execute("DROP TABLE chats")
         conn.execute("PRAGMA user_version = 1")
     for _ in range(2):
         with TestClient(create_app(settings, ScriptedChat())) as restarted:
+            restarted.cookies.set("corp_docs_session", owner_cookie)
+            assert restarted.get("/api/v1/chats").json()["items"] == [{"id": question_id, "title": GAP_QUESTION}]
+            message, = restarted.get(f"/api/v1/chats/{question_id}").json()["messages"]
+            assert message["id"] == question_id
             restarted.post("/api/v1/session", json={"role": "quality", "code": "quality-test"})
             item, = restarted.get("/api/v1/quality/cases").json()["items"]
             assert item["id"] == case["id"]

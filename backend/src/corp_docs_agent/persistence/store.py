@@ -134,6 +134,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS quality_mail_request ON quality_mail(case_id) 
 PRAGMA user_version = 2;
 """
 
+CHAT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chats (
+    id TEXT PRIMARY KEY REFERENCES questions(id),
+    title TEXT NOT NULL,
+    deleted_at TEXT
+);
+CREATE TABLE IF NOT EXISTS chat_roots (
+    root_id TEXT PRIMARY KEY REFERENCES questions(id),
+    chat_id TEXT NOT NULL REFERENCES chats(id)
+);
+CREATE INDEX IF NOT EXISTS chat_root_history ON chat_roots(chat_id);
+INSERT OR IGNORE INTO chats (id, title)
+    SELECT id, substr(question, 1, 160) FROM questions
+    WHERE id = root_id AND id NOT IN (SELECT root_id FROM chat_roots);
+INSERT OR IGNORE INTO chat_roots (root_id, chat_id) SELECT id, id FROM chats;
+PRAGMA user_version = 3;
+"""
+
 
 def json_dump(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -241,10 +259,10 @@ class Store:
         try:
             conn.execute("PRAGMA journal_mode = WAL")
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version in {0, 1}:
-                migration = (SCHEMA if version == 0 else "") + MAIL_SCHEMA
+            if version in {0, 1, 2}:
+                migration = (SCHEMA if version == 0 else "") + (MAIL_SCHEMA if version < 2 else "") + CHAT_SCHEMA
                 conn.executescript("BEGIN IMMEDIATE;\n" + migration + "\nCOMMIT;")
-            elif version != 2:
+            elif version != 3:
                 raise RuntimeError("Unsupported database schema")
         finally:
             conn.close()

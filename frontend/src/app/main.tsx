@@ -2,14 +2,17 @@ import { StrictMode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
-  ChevronDown, ClipboardCheck, Files, History, KeyRound, LoaderCircle, LogOut, Menu,
-  MessageCircle, MessageSquareText, PanelLeft, PanelsTopLeft, Plus, UserRound, X,
+  Bell, ChevronDown, ClipboardCheck, Files, KeyRound, LoaderCircle, LogOut, Menu,
+  MessageSquareText, PanelLeft, PanelsTopLeft, Plus, UserRound, X,
 } from 'lucide-react'
 import { AskWorkspace } from '../features/ask/AskWorkspace'
+import { ChatHistory } from '../features/ask/ChatHistory'
 import { Documents } from '../features/documents/Documents'
 import { Quality } from '../features/documents/Quality'
+import { useQualityQueue } from '../features/documents/useQualityQueue'
+import type { QualityNotice } from '../features/documents/useQualityQueue'
 import { api, describeError, post } from '../shared/api'
-import type { Page, QuestionSummary, Role, Session } from '../shared/api'
+import type { ChatSummary, Page, Role, Session } from '../shared/api'
 import { Dialog } from '../shared/Dialog'
 import { ThemeToggle, updateThemeColor } from './ThemeToggle'
 import './styles.css'
@@ -36,12 +39,16 @@ function App() {
   const [ready, setReady] = useState<boolean | null>(null)
   const [failure, setFailure] = useState('')
   const [section, setSection] = useState<Section>('ask')
-  const [history, setHistory] = useState<QuestionSummary[]>([])
+  const [history, setHistory] = useState<ChatSummary[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [historyRevision, setHistoryRevision] = useState(0)
   const [workspace, setWorkspace] = useState(0)
   const [login, setLogin] = useState<'staff' | 'quality' | null>(null)
   const [navOpen, setNavOpen] = useState(false)
+  const [qualityTarget, setQualityTarget] = useState<QualityNotice | null>(null)
   const mainRef = useRef<HTMLElement>(null)
+  const qualityQueue = useQualityQueue(session?.role === 'quality')
+  const qualityNotice = session?.role === 'quality' ? qualityQueue.notices[0] : undefined
 
   useLayoutEffect(() => {
     document.documentElement.dataset.layout = layout
@@ -70,11 +77,11 @@ function App() {
   useEffect(() => {
     if (!session) return
     const abort = new AbortController()
-    api<Page<QuestionSummary>>('/questions?limit=7', { signal: abort.signal }).then((page) => setHistory(page.items)).catch(() => {
-      if (!abort.signal.aborted) setHistory([])
-    })
+    api<Page<ChatSummary>>('/chats', { signal: abort.signal }).then((page) => {
+      if (!abort.signal.aborted) setHistory(page.items)
+    }).catch(() => {})
     return () => abort.abort()
-  }, [session, activeId])
+  }, [session, activeId, historyRevision])
 
   useEffect(() => {
     if (!navOpen) return
@@ -85,11 +92,12 @@ function App() {
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [navOpen])
 
-  function navigate(next: Section) {
+  function navigate(next: Section, target?: QualityNotice) {
     if (next === 'quality' && session?.role !== 'quality') {
       setLogin('quality')
     } else {
       setSection(next)
+      setQualityTarget(target ?? null)
     }
     setNavOpen(false)
   }
@@ -101,12 +109,36 @@ function App() {
     setNavOpen(false)
   }
 
+  function openChat(id: string) {
+    if (id !== activeId || section !== 'ask') setWorkspace((version) => version + 1)
+    setActiveId(id)
+    setSection('ask')
+    setNavOpen(false)
+  }
+
+  function chatSubmitted(id: string) {
+    setActiveId(id)
+    setHistoryRevision((revision) => revision + 1)
+  }
+
+  function renameChat(chat: ChatSummary) {
+    setHistory((items) => items.map((item) => item.id === chat.id ? chat : item))
+    setHistoryRevision((revision) => revision + 1)
+  }
+
+  function deleteChat(id: string) {
+    setHistory((items) => items.filter((item) => item.id !== id))
+    setHistoryRevision((revision) => revision + 1)
+    if (activeId === id) startQuestion()
+  }
+
   function applySession(value: Session) {
     setSession(value)
     setHistory([])
     setActiveId(null)
     setWorkspace((version) => version + 1)
     setSection(value.role === 'quality' ? 'quality' : 'ask')
+    setQualityTarget(null)
     setFailure('')
     setLogin(null)
     setNavOpen(false)
@@ -186,28 +218,34 @@ function App() {
       </div>
       <button type="button" className="new-question" onClick={startQuestion}><Plus size={19} /> Новый чат</button>
       {layout !== 'focus' && navigation}
-      {session && <nav className="recent" aria-labelledby="chat-history">
-        <h2 id="chat-history"><History size={15} /> История чатов</h2>
-        {history.length === 0 && <p>Здесь появятся ваши чаты</p>}
-        {history.map((item) => <button type="button" key={item.id} aria-current={activeId === item.id && section === 'ask' ? 'true' : undefined}
-          onClick={() => {
-            setActiveId(item.id)
-            setSection('ask')
-            setWorkspace((version) => version + 1)
-            setNavOpen(false)
-          }} title={item.question}><MessageCircle size={15} /><span>{item.question}</span></button>)}
-      </nav>}
+      {session && <ChatHistory key={session.role} chats={history} activeId={section === 'ask' ? activeId : null}
+        onOpen={openChat} onRename={renameChat} onDelete={deleteChat} />}
     </aside>
 
     <main className="main-shell" data-section={section} ref={mainRef}>
       {failure && <p className="alert error app-error" role="alert">{failure}</p>}
       {!session && !failure && <p className="working app-error" role="status"><LoaderCircle size={19} className="spin" /> Открываем рабочую область</p>}
-      {session && section === 'ask' && <AskWorkspace key={workspace} session={session} activeId={activeId} onSelect={setActiveId}
+      {session && section === 'ask' && <AskWorkspace key={workspace} session={session} activeId={activeId} onSelect={chatSubmitted}
         onLogin={() => setLogin('staff')} variant={layout} />}
       {session && section === 'documents' && <Documents key={session.role} />}
-      {session?.role === 'quality' && section === 'quality' && <Quality />}
+      {session?.role === 'quality' && section === 'quality' && <Quality queue={qualityQueue} target={qualityTarget} />}
     </main>
     {layout === 'focus' && <div className="navigation-dock">{navigation}</div>}
+    {qualityNotice && <div className="quality-notice card">
+      <Bell size={19} aria-hidden="true" />
+      <div className="quality-notice-message" role="status">
+        <strong>{qualityNotice.tab === 'practices'
+          ? (qualityNotice.isNew ? 'Новый случай из практики' : 'Случай из практики обновлён')
+          : (qualityNotice.isNew ? 'Новое обращение' : 'Обращение обновилось')}</strong>
+        <span>{qualityNotice.title}</span>
+      </div>
+      <button className="button secondary" type="button" onClick={() => {
+        navigate('quality', qualityNotice)
+        qualityQueue.dismiss(qualityNotice.id)
+      }}>Открыть</button>
+      <button className="icon-button" type="button" aria-label="Скрыть уведомление"
+        onClick={() => qualityQueue.dismiss(qualityNotice.id)}><X size={16} /></button>
+    </div>}
     {login && session && <LoginDialog key={login} initialRole={login} session={session}
       onClose={() => setLogin(null)} onLogin={applySession} />}
   </div>

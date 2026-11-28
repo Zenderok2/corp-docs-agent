@@ -9,6 +9,7 @@ QuestionText = Annotated[str, StringConstraints(strip_whitespace=True, min_lengt
 NoteText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=5, max_length=2000)]
 Key = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_.-]{0,79}$")]
 VersionRef = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_.-]{0,79}@[a-z0-9][a-z0-9_.-]{0,79}$")]
+ChatId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
 AccessGroup = Literal["demo", "staff", "quality"]
 
 
@@ -46,6 +47,11 @@ class Ask(StrictModel):
     as_of: date | None = None
     context: QuestionContext = Field(default_factory=QuestionContext)
     document_ids: list[str] = Field(default_factory=list, max_length=25)
+    chat_id: ChatId | None = None
+
+
+class ChatRename(StrictModel):
+    title: ShortText
 
 
 class FollowUp(StrictModel):

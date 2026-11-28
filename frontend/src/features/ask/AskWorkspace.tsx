@@ -5,7 +5,7 @@ import {
   FileText, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, Search, Sparkles,
 } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, formatRevision, post, scopeFields } from '../../shared/api'
-import type { Answer, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
+import type { Answer, Chat, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
 import { Dialog } from '../../shared/Dialog'
 import { MailThread } from '../documents/MailThread'
 import { SourceDialog } from '../sources/SourceDialog'
@@ -50,7 +50,15 @@ const explanations: Record<string, string> = {
   out_of_scope: 'Агент ищет правила в корпоративных документах. За оперативными данными обратитесь к владельцу процесса.',
 }
 
-type Interaction = { id: string }
+type Interaction = { id: string; chat_id: string }
+
+function questionAnswer(question?: Question) {
+  return question?.result && 'outcome' in question.result ? question.result : null
+}
+
+function questionPending(question: Question) {
+  return question.status === 'queued' || question.status === 'running'
+}
 
 export function AskWorkspace({ session, activeId, onSelect, onLogin, variant }: {
   session: Session
@@ -64,16 +72,18 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, variant }: 
   const [context, setContext] = useState<Scope>({})
   const [asOf, setAsOf] = useState('')
   const [expanded, setExpanded] = useState(false)
-  const [current, setCurrent] = useState<Question | null>(null)
+  const [chat, setChat] = useState<Chat | null>(null)
   const [followUp, setFollowUp] = useState('')
   const [departmentSelection, setDepartmentSelection] = useState<{ id: string; names: string[] } | null>(null)
-  const [submitted, setSubmitted] = useState<{ id: string | null; question: string } | null>(null)
+  const [submitted, setSubmitted] = useState<{ id: string | null; question: string; clarification: boolean } | null>(null)
   const [failure, setFailure] = useState('')
   const [sourceId, setSourceId] = useState<string | null>(null)
   const [sourcesOpen, setSourcesOpen] = useState(false)
-  const [practice, setPractice] = useState<Citation | null>(null)
+  const [practice, setPractice] = useState<{ citation: Citation; questionId: string } | null>(null)
   const requestInFlight = useRef<AbortController | null>(null)
+  const retryRequest = useRef<{ operation: string; key: string } | null>(null)
   const questionBox = useRef<HTMLTextAreaElement>(null)
+  const conversationEnd = useRef<HTMLDivElement>(null)
   const dragStart = useRef<{ y: number; height: number } | null>(null)
   const [inputHeight, setInputHeight] = useState<number>()
 
@@ -84,6 +94,7 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, variant }: 
 
   useEffect(() => () => requestInFlight.current?.abort(), [])
 
+  const submittedId = submitted?.id
   useEffect(() => {
     if (!activeId) return
     const abort = new AbortController()
@@ -91,12 +102,14 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, variant }: 
     let retries = 0
     const poll = async () => {
       try {
-        const value = await api<Question>('/questions/' + activeId, { signal: abort.signal })
-        setCurrent(value)
+        const value = await api<Chat>('/chats/' + activeId, { signal: abort.signal })
+        if (abort.signal.aborted) return
+        setChat(value)
+        if (submittedId) setSubmitted((item) => item?.id === submittedId ? null : item)
         retries = 0
-        if (value.status === 'queued' || value.status === 'running') {
+        if (value.messages.some(questionPending)) {
           timer = window.setTimeout(poll, 900)
-        } else if (value.result && 'outcome' in value.result && value.result.quality_case?.status === 'pending') {
+        } else if (value.messages.some((message) => questionAnswer(message)?.quality_case?.status === 'pending')) {
           timer = window.setTimeout(poll, 5000)
         }
       } catch (error) {
@@ -108,42 +121,52 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, variant }: 
     }
     void poll()
     return () => { abort.abort(); window.clearTimeout(timer) }
-  }, [activeId])
+  }, [activeId, submittedId])
 
-  const displayed = current?.id === activeId ? current : null
-  const result = displayed?.result && 'outcome' in displayed.result ? displayed.result : null
-  const awaiting = Boolean(activeId && !failure && (!displayed || ['queued', 'running'].includes(displayed.status)))
+  const messages = chat?.id === activeId ? chat.messages : []
+  const displayed = messages.at(-1)
+  const result = questionAnswer(displayed)
+  const awaiting = Boolean(activeId && !failure && (!displayed || submittedId || messages.some(questionPending)))
   const sending = submitted?.id === null
   const busy = sending || awaiting
   const empty = !activeId && !sending
-  const thinking = sending || (awaiting && (displayed !== null || submitted?.id === activeId))
-  const pendingQuestion = !displayed && (sending || submitted?.id === activeId) ? submitted?.question : null
-  const selectedDepartments = departmentSelection?.id === activeId ? departmentSelection?.names ?? [] : []
+  const thinking = sending || Boolean(awaiting && (displayed || submittedId))
+  const pendingQuestion = submitted && !submitted.clarification ? submitted.question : null
+  const selectedDepartments = departmentSelection?.id === displayed?.id ? departmentSelection?.names ?? [] : []
+
+  useEffect(() => {
+    conversationEnd.current?.scrollIntoView({ block: 'nearest' })
+  }, [activeId, displayed?.id, displayed?.status, pendingQuestion, variant])
 
   async function send(question: string, parent?: string, detail?: QuestionContext) {
     if (!question.trim() || requestInFlight.current || !session.visible_versions) return
     const abort = new AbortController()
     requestInFlight.current = abort
     setFailure('')
-    setSubmitted({ id: null, question })
+    setSubmitted({ id: null, question, clarification: Boolean(parent) })
     try {
       const path = parent ? '/questions/' + parent + '/follow-ups' : '/questions'
       const departmentNames = context.department?.split(';').map((value) => value.trim()).filter(Boolean) ?? []
       const request = parent
         ? { answer: question, context: detail ?? {} }
-        : { question, context: departmentNames.length > 1
+        : { question, chat_id: activeId ?? undefined, context: departmentNames.length > 1
           ? { ...context, department: null, departments: departmentNames }
           : { ...context, department: departmentNames[0] ?? null }, as_of: asOf || undefined }
-      // getRandomValues also works when the LAN preview is served over HTTP.
-      const randomBytes = crypto.getRandomValues(new Uint8Array(16))
-      const requestKey = Array.from(randomBytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
-      const response = await post<Interaction>(path, request, requestKey, abort.signal)
+      const operation = path + '\n' + JSON.stringify(request)
+      if (retryRequest.current?.operation !== operation) {
+        // getRandomValues also works when the LAN preview is served over HTTP.
+        const randomBytes = crypto.getRandomValues(new Uint8Array(16))
+        const key = Array.from(randomBytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+        retryRequest.current = { operation, key }
+      }
+      const response = await post<Interaction>(path, request, retryRequest.current.key, abort.signal)
       if (abort.signal.aborted) return
+      retryRequest.current = null
       setDraft('')
       setFollowUp('')
       setDepartmentSelection(null)
-      setSubmitted({ id: response.id, question })
-      onSelect(response.id)
+      setSubmitted({ id: response.id, question, clarification: Boolean(parent) })
+      onSelect(response.chat_id)
     } catch (error) {
       if (!abort.signal.aborted) {
         setSubmitted(null)
@@ -189,7 +212,8 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, variant }: 
           resizeInput(questionBox.current.offsetHeight + (event.key === 'ArrowUp' ? 24 : -24))
         }}><span aria-hidden="true" /></button>
       <label className="visually-hidden" htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
-      <textarea ref={questionBox} style={{ height: inputHeight }} id="question-box" rows={2} value={draft} placeholder="Например, кто согласует план проекта?" required minLength={4} maxLength={800}
+      <textarea ref={questionBox} style={{ height: inputHeight }} id="question-box" rows={2} value={draft}
+        placeholder={activeId ? 'Задайте следующий вопрос' : 'Например, кто согласует план проекта?'} required minLength={4} maxLength={800}
         aria-keyshortcuts="Control+Enter Meta+Enter" disabled={isWorkspace && busy}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
@@ -223,24 +247,28 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, variant }: 
 
   const citationCount = result?.citations.length ?? 0
   const citationBadge = citationCount > 0 && <span className="number-label">{citationCount}</span>
-  const sources = <>
-    {result?.citations.length ? <div className="evidence-list">
-      {result.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
-        <button type="button" className="source-link" onClick={() => setSourceId(citation.id)}>
-          <span className="source-number">{index + 1}</span>
-          <span><strong>{citation.title}</strong><small>{formatLocator(citation.locator)} · {formatRevision(citation)}</small></span>
-          <ArrowRight size={16} className="source-arrow" />
-        </button>
-        <blockquote>{citation.quote}</blockquote>
-        <button type="button" className="button text-button practice-link" onClick={() => setPractice(citation)}>
-          <MessageSquarePlus size={15} /> Добавить пример применения
-        </button>
-      </div>)}
-    </div> : (
-      <p className="evidence-empty">{result ? 'К этому ответу нет цитат.' : 'Цитаты появятся после ответа.'}</p>
-    )}
-    {result && <Trace answer={result} />}
-  </>
+
+  function renderSources(message?: Question) {
+    const answer = questionAnswer(message)
+    return <>
+      {message && answer?.citations.length ? <div className="evidence-list">
+        {answer.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
+          <button type="button" className="source-link" onClick={() => setSourceId(citation.id)}>
+            <span className="source-number">{index + 1}</span>
+            <span><strong>{citation.title}</strong><small>{formatLocator(citation.locator)} · {formatRevision(citation)}</small></span>
+            <ArrowRight size={16} className="source-arrow" />
+          </button>
+          <blockquote>{citation.quote}</blockquote>
+          <button type="button" className="button text-button practice-link" onClick={() => setPractice({ citation, questionId: message.id })}>
+            <MessageSquarePlus size={15} /> Добавить случай из практики
+          </button>
+        </div>)}
+      </div> : (
+        <p className="evidence-empty">{answer ? 'К этому ответу нет цитат.' : 'Цитаты появятся после ответа.'}</p>
+      )}
+      {answer && <Trace answer={answer} />}
+    </>
+  }
 
   const followUpInput = displayed && result?.clarification ? <form className="follow-up-form" onSubmit={(event) => {
     event.preventDefault()
@@ -271,68 +299,74 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, variant }: 
     </div>
   </aside>
 
+  const clarification = displayed && result?.clarification && <div className="clarification">
+    <div className="clarification-title"><CircleHelp size={19} /><h3>{result.clarification.question}</h3></div>
+    {result.clarification.field === 'department' && result.clarification.options.length > 0 ? <div className="department-options">
+      <fieldset>
+        <legend>Выберите одно или несколько подразделений</legend>
+        <div className="option-list">{result.clarification.options.map((option) => <label className="pill-button" key={option}>
+          <input type="checkbox" checked={selectedDepartments.includes(option)}
+            disabled={sending || (selectedDepartments.length === 5 && !selectedDepartments.includes(option))}
+            onChange={(event) => setDepartmentSelection({ id: displayed.id, names: event.target.checked
+              ? [...selectedDepartments, option] : selectedDepartments.filter((name) => name !== option) })} />{option}
+        </label>)}</div>
+      </fieldset>
+      <div className="option-list">
+        <button type="button" className="button primary" disabled={sending || !selectedDepartments.length} onClick={() => void send(
+          selectedDepartments.join(', '), displayed.id, { departments: selectedDepartments },
+        )}>Продолжить <ArrowRight size={15} /></button>
+        <button type="button" className="button text-button" disabled={sending} onClick={() => void send(
+          'Подразделение пока неизвестно', displayed.id,
+        )}>Не знаю подразделение</button>
+      </div>
+    </div> : result.clarification.options.length > 0 && <div className="option-list">
+      {result.clarification.options.map((option) => {
+        const field = result.clarification?.field
+        return <button type="button" className="pill-button" key={option} disabled={sending} onClick={() => void send(
+          option, displayed.id, field ? { [field]: option } : {},
+        )}>{option}<ArrowRight size={15} /></button>
+      })}
+    </div>}
+    {!isWorkspace && followUpInput}
+  </div>
+
   const conversation = <>
+      {messages.map((message) => {
+        const answer = questionAnswer(message)
+        const showSources = answer && (!isWorkspace || message !== displayed)
+        return <div className="conversation" key={message.id}>
+          <div className="question-bubble">
+            <span className="speaker">Ваш вопрос</span>
+            <p>{message.question}</p>
+            <span className="tiny">На {formatDate(message.as_of)}</span>
+          </div>
+          {message.turns.map((turn, index) => <div className="question-bubble" key={index}>
+            <span className="speaker">Уточнение</span><p>{turn}</p>
+          </div>)}
+          {message.status === 'failed' && message.result && 'error_code' in message.result && (
+            <p className="alert error" role="alert">{describeError(message.result.error_code)}</p>
+          )}
+          {answer && <AnswerPanel answer={answer} openSource={setSourceId} />}
+          {showSources && (answer.citations.length > 0 ? <details className="card evidence-disclosure">
+            <summary>
+              <LibraryBig size={17} /> {citationsTitle}
+              <span className="number-label">{answer.citations.length}</span>
+              <ChevronDown className="evidence-chevron" size={16} />
+            </summary>
+            <div className="evidence-disclosure-body">{renderSources(message)}</div>
+          </details> : renderSources(message))}
+          {message === displayed && clarification}
+        </div>
+      })}
       {pendingQuestion && <div className="conversation">
         <div className="question-bubble"><span className="speaker">Ваш вопрос</span><p>{pendingQuestion}</p></div>
       </div>}
-      {displayed && <div className="conversation">
-        <div className="question-bubble">
-          <span className="speaker">Ваш вопрос</span>
-          <p>{displayed.question}</p>
-          <span className="tiny">На {formatDate(displayed.as_of)}</span>
-        </div>
-        {displayed.turns.map((turn, index) => <div className="question-bubble" key={index}>
-          <span className="speaker">Уточнение</span><p>{turn}</p>
-        </div>)}
-        {displayed.status === 'failed' && displayed.result && 'error_code' in displayed.result && (
-          <p className="alert error" role="alert">{describeError(displayed.result.error_code)}</p>
-        )}
-        {result && <AnswerPanel answer={result} openSource={setSourceId} />}
-        {!isWorkspace && result && (citationCount > 0 ? <details className="card evidence-disclosure">
-          <summary>
-            <LibraryBig size={17} /> {citationsTitle}
-            {citationBadge}
-            <ChevronDown className="evidence-chevron" size={16} />
-          </summary>
-          <div className="evidence-disclosure-body">{sources}</div>
-        </details> : sources)}
-        {result?.clarification && <div className="clarification">
-          <div className="clarification-title"><CircleHelp size={19} /><h3>{result.clarification.question}</h3></div>
-          {result.clarification.field === 'department' && result.clarification.options.length > 0 ? <div className="department-options">
-            <fieldset>
-              <legend>Выберите одно или несколько подразделений</legend>
-              <div className="option-list">{result.clarification.options.map((option) => <label className="pill-button" key={option}>
-                <input type="checkbox" checked={selectedDepartments.includes(option)}
-                  disabled={sending || (selectedDepartments.length === 5 && !selectedDepartments.includes(option))}
-                  onChange={(event) => setDepartmentSelection({ id: displayed.id, names: event.target.checked
-                    ? [...selectedDepartments, option] : selectedDepartments.filter((name) => name !== option) })} />{option}
-              </label>)}</div>
-            </fieldset>
-            <div className="option-list">
-              <button type="button" className="button primary" disabled={sending || !selectedDepartments.length} onClick={() => void send(
-                selectedDepartments.join(', '), displayed.id, { departments: selectedDepartments },
-              )}>Продолжить <ArrowRight size={15} /></button>
-              <button type="button" className="button text-button" disabled={sending} onClick={() => void send(
-                'Подразделение пока неизвестно', displayed.id,
-              )}>Не знаю подразделение</button>
-            </div>
-          </div> : result.clarification.options.length > 0 && <div className="option-list">
-            {result.clarification.options.map((option) => {
-              const field = result.clarification?.field
-              return <button type="button" className="pill-button" key={option} disabled={sending} onClick={() => void send(
-                option, displayed.id, field ? { [field]: option } : {},
-              )}>{option}<ArrowRight size={15} /></button>
-            })}
-          </div>}
-          {!isWorkspace && followUpInput}
-        </div>}
-      </div>}
-
       {busy && <div className="pending-box" role="status">
         {isWorkspace ? <LoaderCircle className="spin" size={17} /> : <img src="/agent-mark.png" width="28" height="28" alt="" />}
         <strong>{sending ? 'Отправляем вопрос' : displayed?.status === 'running' ? 'Агент сверяет источники'
           : thinking ? 'Вопрос принят' : 'Открываем чат'}</strong>
       </div>}
+      {!empty && <div ref={conversationEnd} aria-hidden="true" />}
   </>
 
   return <div className="ask-layout" data-empty={empty}>
@@ -367,13 +401,13 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, variant }: 
       <div className="aside-heading"><div><LibraryBig size={19} /><h2>{citationsTitle}</h2></div>
         {citationBadge}
       </div>
-      {sources}
+      {renderSources(displayed)}
     </aside>}
     {isWorkspace && sourcesOpen && !sourceId && !practice && <Dialog className="workspace-source-drawer" title={citationsTitle} onClose={() => setSourcesOpen(false)}>
-      {sources}
+      {renderSources(displayed)}
     </Dialog>}
     {sourceId && <SourceDialog key={sourceId} id={sourceId} onClose={() => setSourceId(null)} />}
-    {practice && displayed && <PracticeDialog citation={practice} questionId={displayed.id} onClose={() => setPractice(null)} />}
+    {practice && <PracticeDialog citation={practice.citation} questionId={practice.questionId} onClose={() => setPractice(null)} />}
   </div>
 }
 
@@ -436,7 +470,7 @@ function AnswerPanel({ answer, openSource }: { answer: Answer; openSource: (id: 
       <small>Консультация по этому контексту · {formatDate(answer.quality_answer.reviewed_at)}</small>
     </div>}
     {answer.practices.length > 0 && <div className="approved-practices">
-      <h3>Практика применения</h3>
+      <h3>Случаи из практики</h3>
       {answer.practices.map((entry) => <div key={entry.id}>
         <strong>{entry.situation}</strong><p>{entry.action_taken}</p>
       </div>)}

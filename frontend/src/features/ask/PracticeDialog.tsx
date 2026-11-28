@@ -28,12 +28,13 @@ export function PracticeDialog({ citation, questionId, onClose }: {
     }
   }
 
-  return <Dialog title="Добавить пример применения" onClose={onClose}>
+  return <Dialog title="Добавить случай из практики" onClose={onClose}>
     {state === 'done' ? <>
-      <p className="alert success"><CheckCircle2 size={20} /> Пример передан на проверку в службу качества.</p>
+      <p className="alert success"><CheckCircle2 size={20} /> Случай передан на проверку в службу качества.</p>
       <button className="button primary" onClick={onClose}>Готово</button>
     </> : <form className="stack" onSubmit={submit}>
       <blockquote className="form-quote">{citation.quote}</blockquote>
+      <p className="soft">После одобрения службой качества случай появится рядом с этой цитатой.</p>
       <label>Ситуация<textarea required minLength={5} maxLength={2000} rows={3} value={situation} onChange={(event) => setSituation(event.target.value)} placeholder="Когда вы применили этот пункт?" /></label>
       <label>Действие<textarea required minLength={5} maxLength={2000} rows={3} value={action} onChange={(event) => setAction(event.target.value)} placeholder="Что вы сделали?" /></label>
       {failure && <p className="alert error" role="alert">{failure}</p>}
