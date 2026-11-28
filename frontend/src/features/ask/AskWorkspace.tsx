@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   ArrowRight, ArrowUp, Check, ChevronDown, CircleHelp, ClipboardCheck,
-  FileText, FolderOpen, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, Search, Sparkles,
+  FileText, LibraryBig, ListFilter, LoaderCircle, MessageSquarePlus, Search, Sparkles,
 } from 'lucide-react'
 import { api, describeError, formatDate, formatLocator, formatRevision, post, scopeFields } from '../../shared/api'
 import type { Answer, Citation, Question, QuestionContext, Scope, Session } from '../../shared/api'
@@ -13,12 +13,21 @@ import { AgentOrb } from './AgentOrb'
 import { DepartmentComparison } from './DepartmentComparison'
 import { PracticeDialog } from './PracticeDialog'
 
-const sampleQuestions = [
-  { label: 'Согласование плана проекта', question: 'В какой срок проджект-менеджер согласует план проекта?' },
-  { label: 'Подписание договора', question: 'Кто подписывает агентский договор на 400 000 рублей и что проверяет инициатор?' },
-  { label: 'Лицензия подрядчика', question: 'Какую лицензию выдают внешнему подрядчику и на какой срок?' },
-  { label: 'Передача в службу качества', question: 'Как оформить гостевой пропуск в офис на выходные?' },
-]
+const sampleQuestions = {
+  demo: [
+    { label: 'Согласование плана проекта', question: 'В какой срок проджект-менеджер согласует план проекта?' },
+    { label: 'Подписание договора', question: 'Кто подписывает агентский договор на 400 000 рублей и что проверяет инициатор?' },
+    { label: 'Лицензия подрядчика', question: 'Какую лицензию выдают внешнему подрядчику и на какой срок?' },
+    { label: 'Передача в службу качества', question: 'Как оформить гостевой пропуск в офис на выходные?' },
+  ],
+  staff: [
+    { label: 'Назначение проджект-менеджера', question: 'Кто назначает проджект-менеджера в Дирекции ИБ и за какое время, если вся информация указана?' },
+    { label: 'Карточка классического проекта', question: 'Обязательны ли итоговое ТКП и конкурсное ТЗ в карточке классического проекта Дирекции ИБ?' },
+    { label: 'Срок расчёта для конкурса', question: 'Когда в технической дирекции нужно инициировать расчёт до подачи конкурса?' },
+    { label: 'Передача в службу качества', question: 'Как оформить гостевой пропуск на автомобиль в офис?' },
+  ],
+  quality: [],
+}
 
 const outcomeLabels = {
   answered: 'Ответ по регламентам',
@@ -29,6 +38,8 @@ const outcomeLabels = {
   quality_answer: 'Ответ службы качества',
   out_of_scope: 'Вопрос вне корпоративных документов',
 }
+
+const citationsTitle = 'Цитаты к ответу'
 
 const explanations: Record<string, string> = {
   unknown_publication: 'Найдены подходящие положения. Действие редакции на выбранную дату не подтверждено.',
@@ -41,12 +52,11 @@ const explanations: Record<string, string> = {
 
 type Interaction = { id: string }
 
-export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, variant }: {
+export function AskWorkspace({ session, activeId, onSelect, onLogin, variant }: {
   session: Session
   activeId: string | null
   onSelect: (id: string) => void
   onLogin: () => void
-  onLibrary: () => void
   variant: 'focus' | 'workspace'
 }) {
   const isWorkspace = variant === 'workspace'
@@ -63,6 +73,14 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [practice, setPractice] = useState<Citation | null>(null)
   const requestInFlight = useRef<AbortController | null>(null)
+  const questionBox = useRef<HTMLTextAreaElement>(null)
+  const dragStart = useRef<{ y: number; height: number } | null>(null)
+  const [inputHeight, setInputHeight] = useState<number>()
+
+  function resizeInput(height: number) {
+    const minimum = questionBox.current ? parseFloat(getComputedStyle(questionBox.current).minHeight) : 58
+    setInputHeight(Math.max(minimum, Math.min(height, window.innerHeight * 0.32, 256)))
+  }
 
   useEffect(() => () => requestInFlight.current?.abort(), [])
 
@@ -152,8 +170,26 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
     </div>
   ) : (isWorkspace || !busy) && !result?.clarification && (
     <form className="composer card" onSubmit={submit} aria-busy={isWorkspace && busy ? true : undefined}>
+      <button type="button" className="composer-resize" aria-label="Высота поля вопроса. Стрелка вверх увеличивает, вниз уменьшает"
+        title="Потяните вверх, чтобы увеличить поле" disabled={busy}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !questionBox.current) return
+          dragStart.current = { y: event.clientY, height: questionBox.current.offsetHeight }
+          event.currentTarget.setPointerCapture(event.pointerId)
+        }}
+        onPointerMove={(event) => {
+          if (dragStart.current && event.currentTarget.hasPointerCapture(event.pointerId)) {
+            resizeInput(dragStart.current.height + dragStart.current.y - event.clientY)
+          }
+        }}
+        onLostPointerCapture={() => { dragStart.current = null }}
+        onKeyDown={(event) => {
+          if ((event.key !== 'ArrowUp' && event.key !== 'ArrowDown') || !questionBox.current) return
+          event.preventDefault()
+          resizeInput(questionBox.current.offsetHeight + (event.key === 'ArrowUp' ? 24 : -24))
+        }}><span aria-hidden="true" /></button>
       <label className="visually-hidden" htmlFor="question-box">{activeId ? 'Следующий вопрос' : 'Ваш вопрос'}</label>
-      <textarea id="question-box" rows={2} value={draft} placeholder="Например, кто согласует план проекта?" required minLength={4} maxLength={800}
+      <textarea ref={questionBox} style={{ height: inputHeight }} id="question-box" rows={2} value={draft} placeholder="Например, кто согласует план проекта?" required minLength={4} maxLength={800}
         aria-keyshortcuts="Control+Enter Meta+Enter" disabled={isWorkspace && busy}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
@@ -185,6 +221,8 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
     </form>
   )
 
+  const citationCount = result?.citations.length ?? 0
+  const citationBadge = citationCount > 0 && <span className="number-label">{citationCount}</span>
   const sources = <>
     {result?.citations.length ? <div className="evidence-list">
       {result.citations.map((citation, index) => <div className="evidence-card card" key={citation.id}>
@@ -198,14 +236,9 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
           <MessageSquarePlus size={15} /> Добавить пример применения
         </button>
       </div>)}
-    </div> : <>
+    </div> : (
       <p className="evidence-empty">{result ? 'К этому ответу нет цитат.' : 'Цитаты появятся после ответа.'}</p>
-      {session.visible_versions > 0 && <button className="catalog-link" type="button" onClick={onLibrary}>
-        <FolderOpen size={18} />
-        <span><strong>Открыть каталог</strong><small>Доступно редакций · {session.visible_versions}</small></span>
-        <ArrowRight size={16} />
-      </button>}
-    </>}
+    )}
     {result && <Trace answer={result} />}
   </>
 
@@ -227,12 +260,13 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
       : 'Спросите о рабочей ситуации и получите ответ со ссылками на документы.'}</p>
   </header>
 
-  const examples = empty && session.role === 'demo' && session.visible_versions > 0 && <aside className="examples" aria-labelledby="example-questions">
+  const roleExamples = sampleQuestions[session.role]
+  const examples = empty && session.visible_versions > 0 && roleExamples.length > 0 && <aside className="examples" aria-labelledby="example-questions">
     <h2 id="example-questions">Примеры вопросов</h2>
     <div className="example-grid">
-      {sampleQuestions.map((example) => <button type="button" className="example" key={example.label} onClick={() => {
+      {roleExamples.map((example) => <button type="button" className="example" key={example.label} onClick={() => {
         setDraft(example.question)
-        document.getElementById('question-box')?.focus()
+        questionBox.current?.focus()
       }}><span>{example.label}</span><ArrowRight size={16} /></button>)}
     </div>
   </aside>
@@ -254,14 +288,14 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
           <p className="alert error" role="alert">{describeError(displayed.result.error_code)}</p>
         )}
         {result && <AnswerPanel answer={result} openSource={setSourceId} />}
-        {!isWorkspace && result && <details className="card evidence-disclosure">
+        {!isWorkspace && result && (citationCount > 0 ? <details className="card evidence-disclosure">
           <summary>
-            <LibraryBig size={17} /> Источники ответа
-            {result.citations.length > 0 && <span className="number-label">{result.citations.length}</span>}
+            <LibraryBig size={17} /> {citationsTitle}
+            {citationBadge}
             <ChevronDown className="evidence-chevron" size={16} />
           </summary>
           <div className="evidence-disclosure-body">{sources}</div>
-        </details>}
+        </details> : sources)}
         {result?.clarification && <div className="clarification">
           <div className="clarification-title"><CircleHelp size={19} /><h3>{result.clarification.question}</h3></div>
           {result.clarification.field === 'department' && result.clarification.options.length > 0 ? <div className="department-options">
@@ -301,7 +335,6 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
       </div>}
   </>
 
-  const sourceCount = result?.citations.length ?? 0
   return <div className="ask-layout" data-empty={empty}>
     {!isWorkspace && <div className="ask-scenery" aria-hidden="true">
       <div className="ask-scene">
@@ -312,7 +345,7 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
       {isWorkspace ? <>
         <div className="workspace-chat-tools">
           <button type="button" className="button secondary" aria-haspopup="dialog" onClick={() => setSourcesOpen(true)}>
-            <LibraryBig size={16} /> Источники <span className="number-label">{sourceCount}</span>
+            <LibraryBig size={16} /> {citationsTitle} {citationBadge}
           </button>
         </div>
         <div className="workspace-chat-scroll" tabIndex={0} role="region" aria-label="Сообщения">
@@ -330,13 +363,13 @@ export function AskWorkspace({ session, activeId, onSelect, onLogin, onLibrary, 
     </section>
 
     {!isWorkspace && examples}
-    {isWorkspace && <aside className="evidence-rail" id="answer-sources" aria-label="Основания ответа">
-      <div className="aside-heading"><div><LibraryBig size={19} /><h2>Источники</h2></div>
-        {(isWorkspace || sourceCount > 0) && <span className="number-label">{sourceCount}</span>}
+    {isWorkspace && <aside className="evidence-rail" id="answer-sources" aria-label={citationsTitle}>
+      <div className="aside-heading"><div><LibraryBig size={19} /><h2>{citationsTitle}</h2></div>
+        {citationBadge}
       </div>
       {sources}
     </aside>}
-    {isWorkspace && sourcesOpen && !sourceId && !practice && <Dialog className="workspace-source-drawer" title="Источники" onClose={() => setSourcesOpen(false)}>
+    {isWorkspace && sourcesOpen && !sourceId && !practice && <Dialog className="workspace-source-drawer" title={citationsTitle} onClose={() => setSourcesOpen(false)}>
       {sources}
     </Dialog>}
     {sourceId && <SourceDialog key={sourceId} id={sourceId} onClose={() => setSourceId(null)} />}

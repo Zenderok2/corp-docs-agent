@@ -88,6 +88,7 @@
 .app-shell[data-layout="workspace"] .button.topbar-action { border-color: var(--line-strong); }
 .app-shell[data-layout="workspace"] .button.topbar-action:hover { background: var(--accent-soft); }
 .app-shell[data-layout="workspace"] .layout-control select { border-color: var(--line-strong); border-radius: 6px; box-shadow: none; }
+.app-shell[data-layout="workspace"] .theme-toggle { border-color: var(--line-strong); }
 
 .app-shell[data-layout="workspace"] .sidebar {
   position: relative; inset: auto; grid-area: sidebar; width: auto; height: 100%; z-index: 1;
@@ -114,8 +115,6 @@
 .app-shell[data-layout="workspace"] .recent h2 { padding-inline: 8px; font-weight: 600; }
 .app-shell[data-layout="workspace"] .recent button { width: 100%; min-height: 32px; padding-block: 5px; }
 .app-shell[data-layout="workspace"] .recent button svg { color: var(--muted); }
-.app-shell[data-layout="workspace"] .sidebar-footer { padding-block: 12px 1px; }
-.app-shell[data-layout="workspace"] .person-symbol { border-radius: 6px; }
 .app-shell[data-layout="workspace"] .sidebar.open .sidebar-close,
 .app-shell[data-layout="workspace"] .navigation-scrim { display: none; }
 
@@ -197,7 +196,7 @@
 }
 .app-shell[data-layout="workspace"] .composer { padding: 8px 10px; border-radius: 8px; border-color: var(--line-strong); }
 .app-shell[data-layout="workspace"] .composer > textarea {
-  min-height: 58px; max-height: min(22dvh, 13rem); padding: 8px; font-size: 15px;
+  min-height: 58px; padding: 8px; font-size: 15px;
 }
 .app-shell[data-layout="workspace"] .composer > textarea:disabled { cursor: default; opacity: 1; }
 .app-shell[data-layout="workspace"] .composer-actions { padding-top: 7px; margin-top: 3px; }
@@ -233,10 +232,6 @@
 .app-shell[data-layout="workspace"] .evidence-empty {
   padding: 14px 0 2px; border: 0; border-radius: 0; background: none; font-size: 13px;
 }
-.app-shell[data-layout="workspace"] .catalog-link {
-  gap: 8px; border-color: var(--line); border-radius: 6px; background: var(--surface);
-}
-.app-shell[data-layout="workspace"] .catalog-link:hover { background: var(--accent-soft); }
 .app-shell[data-layout="workspace"] .trace { padding: 10px 2px; border: 0; border-radius: 0; background: none; }
 .app-shell[data-layout="workspace"] .trace summary { color: var(--ink); font-weight: 600; }
 

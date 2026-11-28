@@ -1,18 +1,24 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Check, CornerUpLeft, FileCheck2, LoaderCircle, Mail } from 'lucide-react'
-import { api, describeError, formatDate, formatLocator, scopeFields } from '../../shared/api'
+import { api, describeError, formatDate, formatLocator, formatTimestamp, scopeFields } from '../../shared/api'
 import type { Page, PracticeQueueItem, QualityCase } from '../../shared/api'
 import { SourceDialog } from '../sources/SourceDialog'
 import { MailThread } from './MailThread'
 
-const caseStatuses = { pending: 'На проверке', published: 'Опубликован', dismissed: 'Закрыт', withdrawn: 'Отозван' }
+const caseStatuses = { pending: 'На проверке', published: 'Ответ опубликован', dismissed: 'Закрыт', withdrawn: 'Отозван' }
+const caseColors = { pending: 'amber', published: 'published', dismissed: '', withdrawn: 'withdrawn' }
 const practiceStatuses = { pending_review: 'На проверке', approved: 'Одобрен', dismissed: 'Отклонён' }
+const caseTabs = [
+  { id: 'pending', label: 'Входящие письма', empty: 'Вопросов на проверку пока нет.' },
+  { id: 'reviewed', label: 'Проверенные', empty: 'Проверенных обращений пока нет.' },
+  { id: 'withdrawn', label: 'Отозванные', empty: 'Отозванных ответов пока нет.' },
+] as const
 
 export function Quality() {
   const [cases, setCases] = useState<QualityCase[]>([])
   const [practices, setPractices] = useState<PracticeQueueItem[]>([])
-  const [tab, setTab] = useState<'cases' | 'practices'>('cases')
+  const [tab, setTab] = useState<typeof caseTabs[number]['id'] | 'practices'>('pending')
   const [loading, setLoading] = useState(true)
   const [failure, setFailure] = useState('')
   const [selectedCase, setSelectedCase] = useState<string | null>(null)
@@ -54,24 +60,33 @@ export function Quality() {
     }
   }
 
-  const pending = cases.filter((item) => item.status === 'pending').length
+  const grouped = {
+    pending: cases.filter((item) => item.status === 'pending'),
+    reviewed: cases.filter((item) => item.status === 'published' || item.status === 'dismissed'),
+    withdrawn: cases.filter((item) => item.status === 'withdrawn'),
+  }
   const reports = practices.filter((item) => item.status === 'pending_review').length
   return <section className="content-page">
     <header className="page-heading">
       <h1>Служба качества</h1><p>Отвечайте на письма сотрудников и проверяйте примеры применения регламентов.</p>
     </header>
     <div className="tabs" aria-label="Очереди проверки">
-      <button type="button" aria-pressed={tab === 'cases'} onClick={() => setTab('cases')}>Входящие письма <span>{pending}</span></button>
+      {caseTabs.map(({ id, label }) => <button key={id} type="button" aria-pressed={tab === id}
+        onClick={() => { setTab(id); setSelectedCase(null); setFailure('') }}>{label} <span>{grouped[id].length}</span></button>)}
       <button type="button" aria-pressed={tab === 'practices'} onClick={() => setTab('practices')}>Примеры применения <span>{reports}</span></button>
     </div>
-    {failure && (tab !== 'cases' || !selectedCase) && <p className="alert error" role="alert">{failure}</p>}
+    {failure && (tab === 'practices' || !selectedCase) && <p className="alert error" role="alert">{failure}</p>}
     {loading && <p className="working" role="status"><LoaderCircle size={18} className="spin" /> Загружаем очередь</p>}
-    {tab === 'cases' && <>
-      {!loading && !cases.length && <p className="card list-empty">Вопросов на проверку пока нет.</p>}
-      {cases.map((item) => <article key={item.id} className="review-card card">
-        <header><div><span className="speaker">{formatDate(item.as_of)}{item.role === 'demo' ? ' · Демо' : ''}</span><h3>{item.question}</h3></div>
-          <span className={item.status === 'pending' ? 'tag amber' : 'tag accent'}>{caseStatuses[item.status]}</span>
+    {tab !== 'practices' && <>
+      {!loading && !grouped[tab].length && <p className="card list-empty">{caseTabs.find(({ id }) => id === tab)?.empty}</p>}
+      {grouped[tab].map((item) => <article key={item.id} className="review-card card">
+        <header><div><span className="speaker">{item.created_at
+          ? <>Получено <time dateTime={item.created_at}>{formatTimestamp(item.created_at)} МСК</time></>
+          : <>На {formatDate(item.as_of)}</>}{item.role === 'demo' ? ' · Демо' : ''}</span><h3>{item.question}</h3></div>
+          <span className={'tag ' + caseColors[item.status]}>{caseStatuses[item.status]}</span>
         </header>
+        {item.created_at && <p className="soft">Дата применимости · {formatDate(item.as_of)}</p>}
+        {item.reviewed_at && <p className="soft">{caseStatuses[item.status]} <time dateTime={item.reviewed_at}>{formatTimestamp(item.reviewed_at)} МСК</time></p>}
         {item.turns.map((turn, index) => <p key={index} className="soft">Уточнение · {turn}</p>)}
         {scopeFields.filter(({ key }) => item.context[key]).map(({ key, label }) => (
           <p className="soft" key={key}>{label} · {item.context[key]}</p>
@@ -103,8 +118,10 @@ export function Quality() {
       {!loading && !practices.length && <p className="card list-empty">Примеров на проверку пока нет.</p>}
       {practices.map((item) => <article key={item.id} className="review-card card">
         <header><div><span className="speaker">Практика применения</span><h3>{item.title ?? 'Источник недоступен'}</h3></div>
-          <span className={item.status === 'pending_review' ? 'tag amber' : 'tag accent'}>{practiceStatuses[item.status]}</span>
+          <span className={'tag ' + (item.status === 'pending_review' ? 'amber' : item.status === 'approved' ? 'published' : 'withdrawn')}>{practiceStatuses[item.status]}</span>
         </header>
+        {item.created_at && <p className="soft">Получено <time dateTime={item.created_at}>{formatTimestamp(item.created_at)} МСК</time></p>}
+        {item.reviewed_at && <p className="soft">Проверено <time dateTime={item.reviewed_at}>{formatTimestamp(item.reviewed_at)} МСК</time></p>}
         <p><strong>Ситуация</strong> {item.situation}</p>
         <p><strong>Действие</strong> {item.action_taken}</p>
         {item.title && <button type="button" className="button text-button" onClick={() => setSourceId(item.citation_id)}>Открыть исходную цитату</button>}

@@ -414,7 +414,7 @@ def create_app(settings: Settings | None = None, chat: Chat | None = None) -> Fa
         with store.connect() as conn:
             versions = visible_versions(conn, "quality", for_review=True)
             rows = conn.execute(
-                """SELECT p.id, p.citation_id, p.version_id, p.situation, p.action_taken, p.status, p.created_at
+                """SELECT p.id, p.citation_id, p.version_id, p.situation, p.action_taken, p.status, p.created_at, p.reviewed_at
                 FROM practices p ORDER BY (p.status = 'pending_review') DESC, p.created_at DESC LIMIT 75"""
             )
             return {"items": [

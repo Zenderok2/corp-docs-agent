@@ -16,7 +16,10 @@
   grid-template-rows: var(--bar-height) minmax(0, 1fr) var(--dock-height);
   padding-bottom: calc(var(--shell-inset) + env(safe-area-inset-bottom, 0px));
 }
-[data-layout="focus"] .topbar { width: min(100%, 69rem); justify-self: center; border-radius: 25px; }
+[data-layout="focus"] .topbar {
+  width: min(100%, 69rem); justify-self: center; border-radius: 25px;
+  padding-inline-end: calc(clamp(11px, 1.5vw, 23px) + 5px);
+}
 [data-layout="focus"] .sidebar-toggle {
   display: inline-flex; width: auto; padding-inline: 10px; border-radius: 20px; color: var(--accent-deep);
 }
@@ -50,25 +53,28 @@
   justify-content: center; padding-inline: 11px; white-space: nowrap; border-radius: 18px;
 }
 
+@media (max-width: 1000px) {
+  [data-layout="focus"] .topbar .sidebar-toggle span, [data-layout="focus"] .focus-new-chat span { display: none; }
+}
 @media (max-width: 740px) {
+  [data-layout="focus"] .topbar { padding-inline-end: 15px; }
   [data-layout="focus"] { --dock-height: 60px; }
   [data-layout="focus"] .ask-layout { --orb-size: clamp(7.75rem, 21dvh, 11rem); }
   [data-layout="focus"] .sidebar-toggle { width: 42px; padding: 0; }
-  [data-layout="focus"] .sidebar-toggle span { display: none; }
   [data-layout="focus"] .focus-new-chat { margin-inline-start: 0; }
-  [data-layout="focus"] .focus-new-chat span { display: none; }
   .navigation-dock { width: min(100%, 26rem); }
-  .navigation-dock .primary-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .navigation-dock .primary-nav { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
   .navigation-dock .primary-nav button { flex-direction: column; min-height: 48px; gap: 4px; padding: 5px; font-size: .72rem; }
   .navigation-dock .primary-nav svg { width: 16px; height: 16px; }
 }
 @media (max-width: 550px) {
   .topbar .brand strong { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 }
+@media (max-width: 440px) {
+  [data-layout="focus"] .topbar .brand, [data-layout="focus"] .focus-new-chat { display: none; }
+}
 @media (max-width: 345px) {
-  .topbar .brand img { width: 29px; height: 29px; }
-  .topbar .brand { padding: 0; }
-  .topbar .status-ready, [data-layout="focus"] .focus-new-chat { display: none; }
+  .topbar .status-ready { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .sidebar { transition: none; }

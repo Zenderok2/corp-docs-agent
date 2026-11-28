@@ -131,6 +131,8 @@ export type Question = QuestionSummary & {
 
 export type QualityCase = {
   id: string
+  created_at?: string
+  reviewed_at?: string | null
   status: CaseStatus
   question: string
   canonical_question: string | null
@@ -149,6 +151,8 @@ export type QualityCase = {
 
 export type PracticeQueueItem = {
   id: string
+  created_at?: string
+  reviewed_at?: string | null
   citation_id: string
   title: string | null
   situation: string
@@ -236,4 +240,12 @@ export function formatRevision(source: SourceVersion): string {
 
 export function formatDate(date: string): string {
   return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeZone: 'Europe/Moscow' }).format(new Date(date))
+}
+
+const moscowTimestamp = new Intl.DateTimeFormat('ru-RU', {
+  dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Moscow',
+})
+
+export function formatTimestamp(timestamp: string): string {
+  return moscowTimestamp.format(new Date(timestamp))
 }

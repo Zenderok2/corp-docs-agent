@@ -109,6 +109,7 @@ function App() {
     setSection(value.role === 'quality' ? 'quality' : 'ask')
     setFailure('')
     setLogin(null)
+    setNavOpen(false)
   }
 
   function changeLayout(id: string) {
@@ -124,7 +125,7 @@ function App() {
   const navigation = <nav className="primary-nav" aria-label="Основная навигация">
     <button type="button" aria-label={labels.ask} title={labels.ask} aria-current={section === 'ask' ? 'page' : undefined} onClick={() => navigate('ask')}><MessageSquareText size={18} /><span>{labels.ask}</span></button>
     <button type="button" aria-label={labels.documents} title={labels.documents} aria-current={section === 'documents' ? 'page' : undefined} onClick={() => navigate('documents')}><Files size={18} /><span>{labels.documents}</span></button>
-    <button type="button" aria-label={labels.quality} title={labels.quality} aria-current={section === 'quality' ? 'page' : undefined} onClick={() => navigate('quality')} disabled={!session?.quality_login_available}><ClipboardCheck size={18} /><span>{labels.quality}</span></button>
+    {session?.role === 'quality' && <button type="button" aria-label={labels.quality} title={labels.quality} aria-current={section === 'quality' ? 'page' : undefined} onClick={() => navigate('quality')}><ClipboardCheck size={18} /><span>{labels.quality}</span></button>}
   </nav>
   const brand = <button type="button" className="brand" onClick={startQuestion}>
     <img src="/agent-mark.png" width="36" height="36" alt="" />
@@ -158,9 +159,21 @@ function App() {
           <ChevronDown size={13} aria-hidden="true" />
         </label>
         <ThemeToggle />
-        {session?.role === 'demo' && session.staff_login_available && <button type="button" className="button topbar-action topbar-login" aria-label="Войти" title="Войти" onClick={() => setLogin('staff')}>
-          <KeyRound size={16} /><span>Войти</span>
-        </button>}
+        {session && <div className="topbar-account">
+          <span className="topbar-role" title={session.role === 'demo' ? 'Демонстрационный корпус' : 'Рабочий контур'}>
+            {session.role === 'quality' ? <ClipboardCheck size={16} aria-hidden="true" /> : <UserRound size={16} aria-hidden="true" />}
+            <strong>{roles[session.role]}</strong>
+          </span>
+          {session.role === 'demo'
+            ? (session.staff_login_available || session.quality_login_available) && <button type="button" className="button topbar-action topbar-login"
+              aria-label="Войти" title="Войти" onClick={() => setLogin(session.staff_login_available ? 'staff' : 'quality')}>
+              <KeyRound size={16} aria-hidden="true" /><span>Войти</span>
+            </button>
+            : <button type="button" className="button topbar-action topbar-logout" title="Выйти" aria-label="Выйти"
+              onClick={() => void api<Session>('/session', { method: 'DELETE' }).then(applySession).catch((error: unknown) => setFailure(describeError(error)))}>
+              <LogOut size={17} aria-hidden="true" />
+            </button>}
+        </div>}
       </div>
     </header>
 
@@ -184,40 +197,37 @@ function App() {
             setNavOpen(false)
           }} title={item.question}><MessageCircle size={15} /><span>{item.question}</span></button>)}
       </nav>}
-      {session && <footer className="sidebar-footer">
-        <span className="person-symbol">{session.role === 'quality' ? <ClipboardCheck size={18} /> : <UserRound size={18} />}</span>
-        <div><strong>{roles[session.role]}</strong><small>{session.role === 'demo' ? 'Демонстрационный корпус' : 'Рабочий контур'}</small></div>
-        {session.role !== 'demo' && <button type="button" className="icon-button" title="Выйти" aria-label="Выйти"
-          onClick={() => void api<Session>('/session', { method: 'DELETE' }).then(applySession).catch((error: unknown) => setFailure(describeError(error)))}><LogOut size={17} /></button>}
-      </footer>}
     </aside>
 
     <main className="main-shell" data-section={section} ref={mainRef}>
       {failure && <p className="alert error app-error" role="alert">{failure}</p>}
       {!session && !failure && <p className="working app-error" role="status"><LoaderCircle size={19} className="spin" /> Открываем рабочую область</p>}
       {session && section === 'ask' && <AskWorkspace key={workspace} session={session} activeId={activeId} onSelect={setActiveId}
-        onLogin={() => setLogin('staff')} onLibrary={() => navigate('documents')}
-        variant={layout} />}
+        onLogin={() => setLogin('staff')} variant={layout} />}
       {session && section === 'documents' && <Documents key={session.role} />}
       {session?.role === 'quality' && section === 'quality' && <Quality />}
     </main>
     {layout === 'focus' && <div className="navigation-dock">{navigation}</div>}
-    {login && <LoginDialog key={login} role={login} onClose={() => setLogin(null)} onLogin={applySession} />}
+    {login && session && <LoginDialog key={login} initialRole={login} session={session}
+      onClose={() => setLogin(null)} onLogin={applySession} />}
   </div>
 }
 
-function LoginDialog({ role, onLogin, onClose }: {
-  role: 'staff' | 'quality'; onLogin: (session: Session) => void; onClose: () => void
+function LoginDialog({ initialRole, session, onLogin, onClose }: {
+  initialRole: 'staff' | 'quality'; session: Session; onLogin: (session: Session) => void; onClose: () => void
 }) {
+  const [role, setRole] = useState(initialRole)
   const [code, setCode] = useState('')
   const [failure, setFailure] = useState('')
   const [busy, setBusy] = useState(false)
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const accessCode = code.trim()
+    if (!accessCode || busy) return
     setBusy(true)
     setFailure('')
     try {
-      onLogin(await post<Session>('/session', { role, code }))
+      onLogin(await post<Session>('/session', { role, code: accessCode }))
     } catch (error) {
       setFailure(describeError(error))
       setBusy(false)
@@ -225,9 +235,22 @@ function LoginDialog({ role, onLogin, onClose }: {
   }
   return <Dialog title={role === 'quality' ? 'Вход для службы качества' : 'Вход участника'} onClose={onClose}>
     <form className="stack" onSubmit={submit}>
-      <label>Код доступа<input type="password" autoComplete="current-password" required maxLength={256} value={code} onChange={(event) => setCode(event.target.value)} /></label>
+      {session.staff_login_available && session.quality_login_available && <label className="login-role">
+        Войти как
+        <select value={role} disabled={busy} onChange={(event) => {
+          setRole(event.target.value === 'quality' ? 'quality' : 'staff')
+          setCode('')
+          setFailure('')
+        }}>
+          <option value="staff">Участник / жюри</option>
+          <option value="quality">Служба качества</option>
+        </select>
+      </label>}
+      <label>{role === 'quality' ? 'Код службы качества' : 'Код участника / жюри'}
+        <input type="password" autoComplete="off" required maxLength={256} value={code} onChange={(event) => setCode(event.target.value)} />
+      </label>
       {failure && <p className="alert error" role="alert">{failure}</p>}
-      <button type="submit" className="button primary" disabled={busy || !code}>{busy ? 'Проверяем…' : 'Войти'}</button>
+      <button type="submit" className="button primary" disabled={busy || !code.trim()}>{busy ? 'Проверяем…' : 'Войти'}</button>
     </form>
   </Dialog>
 }

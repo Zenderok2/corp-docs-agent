@@ -1,4 +1,5 @@
 import type { QualityMail } from '../../shared/api'
+import { formatTimestamp } from '../../shared/api'
 
 export function MailThread({ mail, expanded = false }: { mail: QualityMail[]; expanded?: boolean }) {
   if (!mail.length) return null
@@ -7,6 +8,7 @@ export function MailThread({ mail, expanded = false }: { mail: QualityMail[]; ex
     {mail.map((message) => <section className="mail-message" key={message.id}>
       <h4>{message.subject}</h4>
       <dl>
+        <dt>Отправлено</dt><dd><time dateTime={message.sent_at}>{formatTimestamp(message.sent_at)} МСК</time></dd>
         <dt>От</dt><dd>{message.sender}</dd>
         <dt>Кому</dt><dd>{message.recipient}</dd>
         {message.cc && <><dt>Копия</dt><dd>{message.cc}</dd></>}

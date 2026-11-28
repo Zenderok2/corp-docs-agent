@@ -30,8 +30,9 @@ export function ThemeToggle() {
     }
   }
 
-  return <button type="button" className="button topbar-action theme-toggle" aria-label={action} title={action} onClick={toggleTheme}>
-    {isDark ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
-    <span>{isDark ? 'Светлая тема' : 'Тёмная тема'}</span>
+  return <button type="button" className="theme-toggle" role="switch" aria-label="Тёмная тема" aria-checked={isDark}
+    title={action} onClick={toggleTheme}>
+    <Sun size={15} aria-hidden="true" />
+    <Moon size={15} aria-hidden="true" />
   </button>
 }
